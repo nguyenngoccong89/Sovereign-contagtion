@@ -1,0 +1,669 @@
+
+
+Similar to keep Ferra’s structure (terminal period + “every other period” steps), and extend it to:
+
+* **market-access regimes** ((m_O,m_P)\in{0,1}^2),
+* **GHH households with a consumption tax** ((\tau)) (tax affects ((l,c,y)), hence utility and feasibility),
+* **EV smoothing over ((b',\tau))** pairs,
+* **EV smoothing over default vs repay**,
+* an **inner price fixed point with damping**,
+* bond prices depending on ((b',\tau)) because (\tau) affects default incentives and continuation values (Cuadra channel).
+
+---
+
+# 0) Functional forms and parameters (as used in code)
+
+## Government / household preferences
+
+Private utility (GHH):
+[
+u(c,l)=\frac{\left(c-\theta\frac{l^{1+\nu}}{1+\nu}\right)^{1-\sigma_H}}{1-\sigma_H}
+\quad\text{with}\quad
+\sigma_H=2,\ \theta=1,\ \nu=2.
+]
+
+Public good utility:
+[
+v(g)=\omega_g\frac{g^{1-\sigma_H}}{1-\sigma_H},\qquad \omega_g=0.40.
+]
+
+Discount factor (sovereign): (\beta=0.90).
+
+## Technology and shocks
+
+Production: (y=z,l).
+
+AR(1) in logs:
+[
+\ln z'=\rho\ln z+\varepsilon',\quad \varepsilon'\sim N(0,\sigma_\varepsilon^2),
+\quad \rho=0.90,\ \sigma_\varepsilon=0.02.
+]
+
+Discretization: Tauchen, (N_Z=7), width (m=3).
+
+## Default penalty (cap rule)
+
+[
+z^{def}=\min{z,\delta,\bar z},
+\quad \delta=0.90,\quad
+\bar z=\sum_{z\in\mathcal Z}\pi(z),z,
+]
+where (\pi) is the stationary distribution of the discretized chain.
+
+## Market access
+
+Re-entry: (\Pr(m'=0\mid m=1)=\lambda), with (\lambda=0.20).
+
+## Lender
+
+CRRA marginal utility: (U_L'(C)=C^{-\sigma_L}), (\sigma_L=2.5).
+Discount: (\beta_L=0.98).
+Endowment: (y_L=0.80).
+
+---
+
+# 1) Closed-form household block (this is where “tax affects labor/output”)
+
+Household budget:
+[
+(1+\tau),c = z,l.
+]
+
+With GHH, the intratemporal condition implies an **interior closed form** for labor.
+
+## Interior solution (before applying (l\le 1))
+
+Maximizing the GHH aggregator (X\equiv c-\theta\frac{l^{1+\nu}}{1+\nu}) subject to the budget yields:
+[
+l(z,\tau)=\left(\frac{z}{\theta(1+\tau)}\right)^{1/\nu}.
+]
+With (\theta=1,\nu=2):
+[
+l(z,\tau)=\left(\frac{z}{1+\tau}\right)^{1/2}.
+]
+
+Then:
+[
+c(z,\tau)=\frac{z,l(z,\tau)}{1+\tau}.
+]
+
+Using the FOC, we also get:
+[
+\theta,l^{1+\nu}=\frac{z,l}{1+\tau}=c
+\quad\Rightarrow\quad
+X(z,\tau)=c-\frac{c}{1+\nu}=c\cdot\frac{\nu}{1+\nu}.
+]
+With (\nu=2): (X=\frac{2}{3}c).
+
+Private utility becomes:
+[
+u(z,\tau)=\frac{X(z,\tau)^{1-\sigma_H}}{1-\sigma_H}.
+]
+
+Tax revenue:
+[
+R(z,\tau)=\tau,c(z,\tau).
+]
+
+## Time endowment constraint
+
+If the model requires (l\le 1), implement:
+
+* compute (l^{int}(z,\tau)),
+* set (l=\min{l^{int},1}),
+* recompute (c=\frac{z,l}{1+\tau}),
+* recompute (X=c-\theta\frac{l^{1+\nu}}{1+\nu}),
+* if (X\le 0), mark the action infeasible.
+
+## Default/exclusion block
+
+Replace (z) by (z^{def}) computed from the cap rule:
+[
+z^{def}=\min{z,\delta,\bar z}.
+]
+Then compute (l^{def}(z,\tau),c^{def}(z,\tau),u^{def}(z,\tau),R^{def}(z,\tau)) exactly as above.
+
+✅ **Coding advice:** precompute and store arrays for each country:
+
+* `l_rep[z,tau], c_rep[z,tau], u_rep[z,tau], rev_rep[z,tau]`
+* `l_def[z,tau], c_def[z,tau], u_def[z,tau], rev_def[z,tau]`
+
+This keeps code aligned with math and speeds computation.
+
+---
+
+# 2) Discretize shocks and build state grids
+
+## 2.1 Productivity grids
+
+* Discretize each country’s (z) into (N_Z=7) points using Tauchen with width (m=3).
+* If shocks are independent across countries, the joint transition is:
+  [
+  \Pi((z_O',z_P')\mid(z_O,z_P))=\Pi_O(z_O'\mid z_O)\cdot \Pi_P(z_P'\mid z_P).
+  ]
+  In code: `Pi_joint = kron(Pi_P, Pi_O)` with consistent indexing.
+
+Compute stationary distribution (\pi) for each country and (\bar z). Then compute (z^{def}) for every grid point.
+
+## 2.2 Debt grids
+
+You need:
+
+* current debt due: (b_i\in\mathcal B_i),
+* next debt choice: (b_i'\in\mathcal B_i') (often same grid).
+
+(You didn’t give bounds; choose them so default occurs in low (z) + high (b) states.)
+
+## 2.3 Tax grids and action grids
+
+Pick a tax grid (\mathcal T\subset[0,\bar\tau]) (e.g. 0 to 0.5). Define the **repayment action set**
+[
+\mathcal A_i=\mathcal B_i'\times\mathcal T_i,
+\quad a_i=(b_i',\tau_i).
+]
+Store two arrays mapping action index → components:
+
+* `bprime_of_a[i_a]`
+* `tau_of_a[i_a]`
+
+---
+
+# 3) EV shocks and damping parameters
+
+Ferra uses EV shocks for convergence; you want EV and damping.
+
+Set:
+
+* (\rho_A): EV scale for actions ((b',\tau)),
+* (\rho_\tau): EV scale for (\tau) when in default/autarky (can set (=\rho_A)),
+* (\rho_D): EV scale for default vs repay,
+* (\xi_q): damping for price/MU inner loop (e.g. 0.2–0.8),
+* (\xi_V): damping for values/default probs outer updates (optional but stabilizing).
+
+Euler constant: (\gamma=0.5772).
+
+**Log-sum-exp (expected max)**
+For values ({x_j}) with EV scale (\rho):
+[
+\text{EVmax}(x)=\gamma\rho+\rho\log\sum_j\exp(x_j/\rho),
+]
+and choice probabilities:
+[
+\pi(j)=\frac{\exp(x_j/\rho)}{\sum_s\exp(x_s/\rho)}.
+]
+
+**Default logit**
+[
+d=\frac{\exp(V^{def}/\rho_D)}{\exp(V^{def}/\rho_D)+\exp(V^{rep}/\rho_D)}.
+]
+
+---
+
+# 4) Objects stored in code
+
+Index regimes by (r\in{1,2,3,4}) mapping:
+
+1. (r=1): ((m_O,m_P)=(0,0)) joint access
+2. (r=2): ((0,1)) only (O) has access
+3. (r=3): ((1,0)) only (P) has access
+4. (r=4): ((1,1)) both excluded
+
+State index:
+[
+s \equiv (z_O,z_P,b_O,b_P,r).
+]
+(When (m_i=1), enforce (b_i=0) in the state grid.)
+
+For each (t), store:
+
+* `V_O[t,s]`, `V_P[t,s]` (inclusive values)
+* `d_O[t,s]`, `d_P[t,s]` (default probabilities; set 0 when (m_i=1))
+* `muL[t,s]` lender marginal utility at equilibrium **expected** lender consumption
+
+Optional “policy-implied” expected objects:
+
+* `E_bprime_O[t,s]`, `E_tau_O[t,s]`
+* `E_bprime_P[t,s]`, `E_tau_P[t,s]`
+* `E_qO[t,s]`, `E_qP[t,s]`
+
+For the inner loop at a given (t), compute primitive prices:
+
+* Joint access primitive prices when both repay: `qO_RR[s,aO,aP]`, `qP_RR[s,aO,aP]`
+* If only O issues (P defaults or excluded): `qO_RD[s,aO]`
+* If only P issues (O defaults or excluded): `qP_DR[s,aP]`
+* Sole borrower regimes: `qO_sole[s,aO]`, `qP_sole[s,aP]`
+
+(If memory is too large, compute them on the fly per action and discard after using them; Ferra stores full tensors because their choice space is smaller.)
+
+---
+
+# 5) Terminal period (t=T) (markets closed)
+
+In (T): **no issuance** ((b'_O=b'_P=0)).
+
+For each state (s):
+
+## 5.1 Repay value (tax choice only)
+
+If (m_i=0), repay implies paying (b_i). For each (\tau\in\mathcal T_i):
+
+* read (u_i(z_i,\tau)) from precomputed block
+* compute (g_i = R_i(z_i,\tau) - b_i)
+* if (g_i\le 0), mark infeasible
+* payoff (x(\tau)=u_i(z_i,\tau)+v(g_i))
+
+EV-smooth over (\tau):
+[
+V_{i,T}^{rep}(s)=\gamma\rho_\tau+\rho_\tau\log\sum_{\tau}\exp(x(\tau)/\rho_\tau).
+]
+
+## 5.2 Default value (tax choice only, default output)
+
+Default implies (b'_i=0) and output uses (z_i^{def}). For each (\tau):
+
+* use (u_i^{def}(z_i,\tau)), (R_i^{def}(z_i,\tau))
+* (g_i^{def}=R_i^{def}(z_i,\tau))
+* payoff (x^{def}(\tau)=u_i^{def}+v(g_i^{def}))
+
+EV-smooth to get (V_{i,T}^{def}(s)).
+
+## 5.3 Default probability
+
+If (m_i=0):
+[
+d_{i,T}(s)=\frac{\exp(V_{i,T}^{def}/\rho_D)}{\exp(V_{i,T}^{def}/\rho_D)+\exp(V_{i,T}^{rep}/\rho_D)}.
+]
+If (m_i=1): set (d_{i,T}(s)=0).
+
+## 5.4 Terminal inclusive value
+
+[
+V_{i,T}(s)=\gamma\rho_D+\rho_D\log\Big(\exp(V_{i,T}^{rep}/\rho_D)+\exp(V_{i,T}^{def}/\rho_D)\Big).
+]
+
+## 5.5 Lender MU in terminal period
+
+Markets closed; lender consumption:
+[
+C_{L,T}(s)=y_L+(1-d_{O,T})b_O+(1-d_{P,T})b_P.
+]
+[
+\mu_{L,T}(s)=C_{L,T}(s)^{-\sigma_L}.
+]
+
+---
+
+# 6) Every other period (t=T-1,\dots,0) (Ferra steps 1–11, adapted)
+
+## Step 1 (Ferra 1): discretize and build transition matrix
+
+Already done in section 2; reuse (\Pi).
+
+## Step 2 (Ferra 2): build expected objects using (t+1)
+
+For every current state (s=(z_O,z_P,b_O,b_P,r)) and every relevant action choice, you need:
+
+* expected continuation values (\mathbb E[V_{i,t+1}(s')]),
+* expected bond payoffs (\mathbb E[1-d_{i,t+1}(s')]),
+* expected lender MU (\mathbb E[\mu_{L,t+1}(s')]).
+
+### Constructing next states (s')
+
+* If (m_i=0) and repay today: (m_i'=0), (b_i' = b_i^{choice}).
+* If (m_i=0) and default today: (m_i'=1), (b_i'=0).
+* If (m_i=1): (b_i=0) today; next period:
+
+  * with prob (\lambda): (m_i'=0), (b_i'=0),
+  * with prob (1-\lambda): (m_i'=1), (b_i'=0).
+
+To compute expectations, loop over:
+
+* (z'=(z_O',z_P')) using (\Pi(z'|z)),
+* (m_O',m_P') using the rules above,
+
+and evaluate (V_{t+1}), (d_{t+1}), (\mu_{t+1}) at the resulting discrete (s').
+
+---
+
+## Step 3 (Ferra 3): Solve Periphery conditional on every leader choice
+
+Do this for:
+
+* joint access start ((m_O,m_P)=(0,0)), conditional on each leader action (a_O) and leader default (d_O),
+* leader default today observed by P, so you need P conditional objects for (d_O=1) as well.
+
+We follow Ferra’s cases, with actions ((b',\tau)).
+
+### Step 3(a) Case 1: both have access and neither defaults today (RR)
+
+Domain: start (m_O=m_P=0) and branch (d_O=0,d_P=0).
+
+#### (i) Primitive prices (q_O^{RR}(s,a_O,a_P)), (q_P^{RR}(s,a_O,a_P))
+
+For each ((s,a_O,a_P)):
+
+* set (b'_O=b'_O(a_O)), (\tau_O=\tau_O(a_O)),
+* set (b'_P=b'_P(a_P)), (\tau_P=\tau_P(a_P)).
+
+Numerators (from (t+1) objects):
+[
+N_{i,t}(s;a_O,a_P)=\beta_L,\mathbb E!\left[\mu_{L,t+1}(s'),(1-d_{i,t+1}(s'))\ \big|\ s,\ d_O=0,d_P=0,\ b'_O,b'_P\right].
+]
+
+Solve prices using 1D root (Ferra-style):
+If both numerators are positive, define:
+[
+\text{ratio}(s;a_O,a_P)=\frac{N_{P,t}}{N_{O,t}},
+\quad q_P=q_O\cdot\text{ratio}.
+]
+Lender consumption today under RR:
+[
+C_L = y_L + b_O + b_P - q_O b'_O - q_P b'*P.
+]
+Pricing condition for O:
+[
+q_O\cdot C_L^{-\sigma_L}=N*{O,t}.
+]
+Solve scalar equation in (q_O), then set (q_P=q_O\cdot\text{ratio}).
+
+Corner cases:
+
+* if (b'_i=0), price not needed for budgets (can still compute),
+* if (N_{i,t}) is tiny (below threshold), set (q_i=0).
+
+#### (ii) Periphery repay value index over actions
+
+For each (a_P=(b'_P,\tau_P)):
+
+* use precomputed (u_P(z_P,\tau_P)), (R_P(z_P,\tau_P)),
+* government budget:
+  [
+  g_P = R_P(z_P,\tau_P) + q_P^{RR}(s,a_O,a_P),b'_P - b_P,
+  ]
+* instantaneous utility:
+  [
+  U_P^{rep}=u_P(z_P,\tau_P)+v(g_P),
+  ]
+* continuation:
+  [
+  \beta,\mathbb E\big[V_{P,t+1}(s')\mid s,\ d_O=0,d_P=0,\ b'*O,b'*P\big].
+  ]
+  Define:
+  [
+  W*{P,t}^{rep,RR}(s;a_O,a_P)=U_P^{rep}+\beta,\mathbb E[V*{P,t+1}(s')].
+  ]
+
+#### (iii) EV-smooth over ((b'_P,\tau_P))
+
+[
+V_{P,t}^{rep,RR}(s;a_O)
+=\gamma\rho_A+\rho_A\log\sum_{a_P\in\mathcal A_P}
+\exp\big(W_{P,t}^{rep,RR}(s;a_O,a_P)/\rho_A\big).
+]
+Choice probabilities:
+[
+\pi_{P,t}^{RR}(a_P\mid s;a_O,\text{repay})
+=\frac{\exp(W/\rho_A)}{\sum_{\hat a_P}\exp(\hat W/\rho_A)}.
+]
+
+Store (needed by leader):
+
+* (V_{P,t}^{rep,RR}(s;a_O)),
+* (\pi_{P,t}^{RR}(\cdot\mid s;a_O)),
+* optionally expected (b'_P,\tau_P) under (\pi).
+
+---
+
+### Step 3(b) Case 2: both have access, Outskirt defaults today (only P issues)
+
+Domain: start (m_O=m_P=0), (d_O=1). Then P chooses repay vs default.
+
+If P repays and chooses (a_P), compute single-issuer P price:
+
+Numerator:
+[
+N_{P,t}^{DR}(s;a_P)=\beta_L,\mathbb E!\left[\mu_{L,t+1}(s'),(1-d_{P,t+1}(s'))\mid d_O=1,d_P=0,b'_P\right].
+]
+
+Solve (q_P^{DR}(s,a_P)) from:
+[
+q_P\cdot C_L^{-\sigma_L}=N_{P,t}^{DR},
+\quad
+C_L=y_L+b_P-q_P b'_P.
+]
+
+Then compute repay value indices (W_{P,t}^{rep,DR}(s;a_P)) and EV-smooth over ((b'_P,\tau_P)) as above.
+
+---
+
+### Step 3(c) Case 3: Periphery defaults today (RD branch)
+
+If P defaults: (b'_P=0), output uses (z_P^{def}), and only (\tau_P) is chosen.
+
+Default value with EV over (\tau_P):
+[
+V_{P,t}^{def}(s;\text{leader condition})
+=\gamma\rho_\tau+\rho_\tau\log\sum_{\tau_P}
+\exp\Big(\big[u_P^{def}(z_P,\tau_P)+v(R_P^{def}(z_P,\tau_P))+\beta\mathbb E[V_{P,t+1}(s')]\big]/\rho_\tau\Big).
+]
+Here (s') uses (m_P'=1), (b_P'=0), and (m_O') depends on whether leader defaulted today.
+
+---
+
+### Step 3(d) Case 4: both default today
+
+Same structure as 3(c), with next regime both excluded.
+
+---
+
+### Step 3(e) Periphery default probability conditional on leader action
+
+For each leader condition:
+[
+d_{P,t}(s\mid \text{leader})
+=\frac{\exp(V_{P,t}^{def}/\rho_D)}
+{\exp(V_{P,t}^{def}/\rho_D)+\exp(V_{P,t}^{rep}/\rho_D)}.
+]
+Inclusive value:
+[
+V_{P,t}(s\mid \text{leader})=\gamma\rho_D+\rho_D\log\Big(\exp(V_{P,t}^{def}/\rho_D)+\exp(V_{P,t}^{rep}/\rho_D)\Big).
+]
+
+These are the follower reaction functions.
+
+---
+
+## Step 4 (Ferra 4): Solve Outskirt (leader) anticipating Periphery behavior
+
+Do this for joint access states (m_O=m_P=0).
+
+For each leader action (a_O=(b'_O,\tau_O)):
+
+### 4(a) Expected price faced by O under EV follower behavior
+
+Follower repays with prob (1-d_{P,t}(s\mid a_O)) and conditional on repay chooses (a_P) with (\pi_{P,t}^{RR}(a_P\mid s;a_O)).
+
+Expected bond price for O:
+[
+\bar q_O(s;a_O)=
+(1-d_P)\sum_{a_P}\pi_{P}^{RR}(a_P\mid s;a_O)\ q_O^{RR}(s,a_O,a_P)
++d_P\ q_O^{RD}(s;a_O),
+]
+where (q_O^{RD}(s;a_O)) solves the single-issuer case when P defaults today:
+[
+q_O^{RD}\cdot (y_L+b_O-q_O^{RD}b'*O)^{-\sigma_L}
+= N*{O,t}^{RD}(s;a_O).
+]
+
+### 4(b) Leader repay value index for (a_O)
+
+* instantaneous utility uses ((z_O,\tau_O)),
+* public good:
+  [
+  g_O = R_O(z_O,\tau_O) + \bar q_O(s;a_O),b'_O - b_O,
+  ]
+* continuation:
+  [
+  \mathbb E[V_{O,t+1}(s')]=
+  (1-d_P)\sum_{a_P}\pi_P^{RR}(a_P\mid s;a_O)\ \mathbb E_{z'}[V_{O,t+1}(s'(b'*O,b'*P,m'=(0,0)))]
+  +d_P\ \mathbb E*{z'}[V*{O,t+1}(s'(b'_O,0,m'=(0,1)))].
+  ]
+
+Define:
+[
+W_{O,t}^{rep}(s;a_O)=u_O(z_O,\tau_O)+v(g_O)+\beta,\mathbb E[V_{O,t+1}(s')].
+]
+
+### 4(c) EV-smooth over ((b'_O,\tau_O))
+
+[
+V_{O,t}^{rep}(s)=\gamma\rho_A+\rho_A\log\sum_{a_O\in\mathcal A_O}\exp(W_{O,t}^{rep}(s;a_O)/\rho_A),
+]
+[
+\pi_{O,t}(a_O\mid s,\text{repay})
+=\frac{\exp(W/\rho_A)}{\sum_{\hat a_O}\exp(\hat W/\rho_A)}.
+]
+
+### 4(d) Leader default value and default probability
+
+Leader default: (b'_O=0), output uses (z_O^{def}), choose (\tau_O) with EV over (\tau_O), continuation uses (m_O'=1,b_O'=0). Evaluate follower behavior under (d_O=1) (from Step 3(b)–(d)).
+
+Compute (V_{O,t}^{def}(s)), then:
+[
+d_{O,t}(s)=
+\frac{\exp(V_{O,t}^{def}/\rho_D)}
+{\exp(V_{O,t}^{def}/\rho_D)+\exp(V_{O,t}^{rep}/\rho_D)}.
+]
+Inclusive:
+[
+V_{O,t}(s)=\gamma\rho_D+\rho_D\log(\exp(V^{def}/\rho_D)+\exp(V^{rep}/\rho_D)).
+]
+
+---
+
+## Step 5 (Ferra 5): Plug leader policies into follower objects to get equilibrium P objects
+
+Periphery values in Step 3 were conditional on leader action. Form equilibrium P objects by integrating over leader EV choice probabilities and leader default probability:
+
+[
+V_{P,t}^{rep,eq}(s)
+===================
+
+(1-d_O)\sum_{a_O}\pi_O(a_O\mid s,\text{repay})\ V_{P,t}^{rep}(s\mid a_O,d_O=0)
++d_O\ V_{P,t}^{rep}(s\mid d_O=1).
+]
+Similarly for (V_{P,t}^{def,eq}(s)). Then compute equilibrium (d_{P,t}(s)) via the default logit.
+
+---
+
+## Step 6–9 (Ferra 6–9): Default policies in equilibrium
+
+Already computed with EV logits. Key point: (d_P) depends on whether O repays/defaults and on (m_O), so combine accordingly (as in Ferra step 9).
+
+---
+
+## Step 10 (Ferra 10): Investors’ consumption and marginal utility at time t
+
+Compute expected lender consumption given EV policy distributions and default probabilities.
+
+### Joint access state ((m_O,m_P)=(0,0))
+
+Expected repayments:
+[
+\mathbb E[\text{repayments}] = (1-d_O)b_O + (1-d_P)b_P.
+]
+
+Expected purchases:
+[
+\mathbb E[q_O b'*O]
+=(1-d_O)\sum*{a_O}\pi_O(a_O)\Big[
+(1-d_P(s\mid a_O))\sum_{a_P}\pi_P^{RR}(a_P\mid a_O)\ q_O^{RR}(s,a_O,a_P)b'_O(a_O)
++d_P(s\mid a_O)\ q_O^{RD}(s,a_O)b'_O(a_O)
+\Big],
+]
+and analogously for (\mathbb E[q_P b'_P]).
+
+Then:
+[
+C_{L,t}(s)=y_L+\mathbb E[\text{repayments}]-\mathbb E[q_O b'*O]-\mathbb E[q_P b'*P],
+\qquad
+\mu*{L,t}(s)=C*{L,t}(s)^{-\sigma_L}.
+]
+
+### Sole borrower and autarky regimes
+
+Compute similarly with only the relevant issuer and with (b_j=0) when (m_j=1).
+
+---
+
+## Step 11 (Ferra 11): Iterate until convergence — with damping
+
+At each (t), you need an inner fixed point because prices depend on today MU, and MU depends on expected policy choices and prices.
+
+### Inner loop at fixed t
+
+Initialize `mu_guess[s]` (from previous (t) or risk-free baseline).
+
+Repeat until convergence:
+
+1. Using `mu_{t+1}` and `d_{t+1}`, compute all pricing numerators (N_{i,t}).
+2. Solve primitive prices ((q^{RR}, q^{RD}, q^{DR})) using the 1D root above.
+3. Compute follower objects conditional on leader actions (Step 3).
+4. Compute leader objects anticipating follower (Step 4).
+5. Build equilibrium default probs and values (Steps 5–9).
+6. Compute implied (\tilde\mu(s)=\tilde C_L(s)^{-\sigma_L}) (Step 10).
+7. Damp update:
+   [
+   \mu^{new}(s)=(1-\xi_q)\mu^{old}(s)+\xi_q,\tilde\mu(s).
+   ]
+8. Converge if:
+   [
+   |\mu^{new}-\mu^{old}|*\infty < \varepsilon*\mu
+   \quad\text{and/or}\quad
+   |E_q^{new}-E_q^{old}|_\infty < \varepsilon_q.
+   ]
+
+After inner convergence, store `V[t]`, `d[t]`, `muL[t]`.
+
+### Outer loop (finite-horizon Hatchondo iteration)
+
+Run backward for (t=T\to 0). Repeat the full backward pass until early-period objects stabilize:
+[
+\max{|V^{new}-V^{old}|*\infty,\ |d^{new}-d^{old}|*\infty,\ |\mu^{new}-\mu^{old}|_\infty}<\varepsilon.
+]
+
+---
+
+# 7) Where market-access regimes enter
+
+Solve three blocks at each (t):
+
+1. **Autarky / exclusion**: states with (m_i=1).
+
+   * only (\tau_i) chosen (EV over (\tau))
+   * continuation mixes re-entry with probability (\lambda)
+
+2. **Sole borrower**: ((m_O,m_P)=(0,1)) and ((1,0)).
+
+   * one-country style problem with action set ((b',\tau)) and default logit
+   * prices solved via single-issuer root solves
+
+3. **Joint access**: ((0,0)).
+
+   * full Stackelberg step 3–5
+
+Unified (V_i(s)) selects correct regime via regime index (r).
+
+---
+
+# 8) Coder checklist (avoid silent bugs)
+
+* ✅ Enforce: if (m_i=1), then (b_i=0).
+* ✅ Enforce: if default today or (m_i=1), then (b_i'=0).
+* ✅ Feasibility: require (X>0) and (g>0); else set value index to a huge negative number.
+* ✅ Use stabilized log-sum-exp.
+* ✅ When solving prices, ensure lender consumption stays positive; bracket root accordingly.
+* ✅ Use damping on MU (or denominators) inside each time-(t) inner loop.
+
+---
+
