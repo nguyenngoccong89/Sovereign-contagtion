@@ -60,9 +60,9 @@ class Grids:
 
 
 def make_grids_10():
-    # 10 grid points each for B and tau (your request)
-    bO = np.linspace(0.0, 0.08, 10)
-    bP = np.linspace(0.0, 0.08, 10)
+    # 10 grid points each for B and tau
+    bO = np.linspace(0.0, 0.40, 10)
+    bP = np.linspace(0.0, 0.40, 10)
     tauO = np.linspace(0.0, 0.30, 10)
     tauP = np.linspace(0.0, 0.30, 10)
     iBO0 = int(np.argmin(np.abs(bO - 0.0)))
