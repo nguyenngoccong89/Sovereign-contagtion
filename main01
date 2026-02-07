@@ -1408,6 +1408,70 @@ def event_study_around_defaults(sim, window=10):
     return out
 
 
+
+@dataclass
+class Solution:
+    """Container returned by solve_model for downstream simulation/analysis."""
+    eq: Eq
+    params: Params
+    grids: Grids
+    Pi2: np.ndarray
+    zO: np.ndarray
+    zP: np.ndarray
+    zO_def: np.ndarray
+    zP_def: np.ndarray
+
+
+def _logsumexp_1d(W, rho):
+    """Compatibility helper requested by Appendix-C notes."""
+    inc, probs = logsumexp_and_probs(np.asarray(W), rho)
+    return inc, probs
+
+
+def solve_model(params: Params,
+                grids: Grids,
+                Pi2,
+                T_horizon=None,
+                tol=None,
+                damp_params=None):
+    """
+    Main orchestration function for the two-country Stackelberg sovereign-debt solver.
+
+    Notes
+    -----
+    - This implementation solves the stationary fixed point (Appendix-C style outer loop)
+      using regime-specific subproblems (00,01,10,11), expectations, damping, and
+      convergence checks over (V, d, lender MU).
+    - T_horizon is accepted for API compatibility but not used in the stationary variant.
+    """
+    if tol is not None:
+        params.tol = float(tol)
+    if damp_params is not None:
+        if isinstance(damp_params, dict):
+            if "damp" in damp_params:
+                params.damp = float(damp_params["damp"])
+        else:
+            params.damp = float(damp_params)
+
+    zO, zP, zO_def, zP_def, Pi2_local = build_joint_z(params)
+    if Pi2 is None:
+        Pi2_use = Pi2_local
+    else:
+        Pi2_use = Pi2
+
+    static = precompute_static(params, grids, zO, zP, zO_def, zP_def)
+    eq = solve_stationary_appendixC(params, grids, Pi2_use, static)
+
+    return Solution(eq=eq, params=params, grids=grids, Pi2=Pi2_use,
+                    zO=zO, zP=zP, zO_def=zO_def, zP_def=zP_def)
+
+
+def simulate_from_solution(sol: Solution, T=10000, burn=2000, seed=0):
+    """Convenience wrapper requested by users of solve_model API."""
+    return simulate(sol.params, sol.grids, sol.Pi2, sol.eq,
+                    sol.zO, sol.zP, sol.zO_def, sol.zP_def,
+                    T=T, burn=burn, seed=seed)
+
 # ============================================================
 # 12. Run
 # ============================================================
@@ -1416,13 +1480,8 @@ if __name__ == "__main__":
     params = Params()
     grids = make_grids_10()
 
-    zO, zP, zO_def, zP_def, Pi2 = build_joint_z(params)
-    static = precompute_static(params, grids, zO, zP, zO_def, zP_def)
-
-    eq = solve_stationary_appendixC(params, grids, Pi2, static)
-
-    sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
-                   T=10000, burn=2000, seed=123)
+    sol = solve_model(params, grids, Pi2=None)
+    sim = simulate_from_solution(sol, T=10000, burn=2000, seed=123)
 
     ev = event_study_around_defaults(sim, window=10)
     if ev is not None:
