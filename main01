@@ -35,14 +35,14 @@ class Params:
     y_L: float = 0.80
 
     # EV smoothing scales
-    rho_a: float = 1e-3   # repay action smoothing over (b',tau)
-    rho_d: float = 1e-3   # default vs repay smoothing
+    rho_a: float = 0.01   # repay action smoothing over (b',tau)
+    rho_d: float = 0.01   # default vs repay smoothing
     euler_gamma: float = 0.5772156649015329
 
     # Iteration / damping
-    max_iter: int = 400
-    tol: float = 1e-7
-    damp: float = 0.5
+    max_iter: int = 800
+    tol: float = 1e-6
+    damp: float = 0.30
 
     # Newton for lender-consumption root (pricing)
     newton_maxit: int = 30
