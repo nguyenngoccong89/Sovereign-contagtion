@@ -1297,7 +1297,7 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
                 bP_p[t] = float(eq.EbP_rep[iz2, iBO, iBP, mO, mP])
                 tauP[t] = float(eq.EtauP_rep[iz2, iBO, iBP, mO, mP])
 
-        # prices used in simulation (expected/policy-averaged in regime (0,0))
+        # prices used in simulation (regime-specific policy-averaged prices)
         qO[t] = float(eq.qO_pol[iz2, iBO, iBP, mO, mP])
         qP[t] = float(eq.qP_pol[iz2, iBO, iBP, mO, mP])
 
