@@ -617,8 +617,8 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                 Eqb = Eqb/S if S>0 else 0.0
 
             CL = yL + (1.0-dO)*bO - (1.0-dO)*Eqb
-            if CL <= 1e-14:
-                CL = 1e-14
+            if CL <= 0.01:
+                CL = 0.01
             mu_tilde[sid] = CL**(-sigmaL)
             continue
 
@@ -711,8 +711,8 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                 Eqb = Eqb/S if S>0 else 0.0
 
             CL = yL + (1.0-dP)*bP - (1.0-dP)*Eqb
-            if CL <= 1e-14:
-                CL = 1e-14
+            if CL <= 0.01:
+                CL = 0.01
             mu_tilde[sid] = CL**(-sigmaL)
             continue
 
@@ -980,8 +980,8 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
         Erep = (1.0-dO)*bO + (1.0-dP)*bP
         Epurch = (1.0-dO)*(EqO_rep + EqP_rep) + dO*(1.0-dP_dO1)*EqPb_dO1
         CL = yL + Erep - Epurch
-        if CL <= 1e-14:
-            CL = 1e-14
+        if CL <= 0.01:
+            CL = 0.01
         mu_tilde[sid] = CL**(-sigmaL)
 
     return V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde
@@ -995,7 +995,8 @@ for it in range(max_iter):
     V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde = fixed_point_update(V_O, V_P, d_O, d_P, muL, sid_of)
 
     # Clamp mu_tilde to prevent numerical explosion
-    mu_max = 1e6
+    # muL of 50 corresponds to CL ≈ 0.04 (reasonable floor for lender consumption)
+    mu_max = 50.0
     mu_tilde = np.minimum(mu_tilde, mu_max)
 
     muL_new = (1.0-xi_q)*muL + xi_q*mu_tilde
