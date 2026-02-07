@@ -59,8 +59,8 @@ burnin = 500
 rhoA   = 0.02
 rhotau = 0.02
 rhoD   = 0.02
-xi_q   = 0.5   # inner MU damping
-xi_V   = 0.5   # outer value/default damping (stabilizing)
+xi_q   = 0.15  # inner MU damping (conservative for stability)
+xi_V   = 0.20  # outer value/default damping (conservative for stability)
 
 EULER_GAMMA = 0.5772156649015329
 
@@ -987,12 +987,16 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
     return V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde
 
 # Solve fixed point
-max_iter = 200
+max_iter = 500
 tol = 1e-5
 
 print("\nStarting fixed point iteration...", flush=True)
 for it in range(max_iter):
     V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde = fixed_point_update(V_O, V_P, d_O, d_P, muL, sid_of)
+
+    # Clamp mu_tilde to prevent numerical explosion
+    mu_max = 1e6
+    mu_tilde = np.minimum(mu_tilde, mu_max)
 
     muL_new = (1.0-xi_q)*muL + xi_q*mu_tilde
     V_O_upd = (1.0-xi_V)*V_O + xi_V*V_O_new
