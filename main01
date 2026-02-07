@@ -793,6 +793,8 @@ def solve_regime_01(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
 
     # P excluded: only tau choice in autarky
     EtauP_aut = np.zeros((NZ2, NB, NB))
+    qO_pol = np.zeros((NZ2, NB, NB))
+    qP_pol = np.zeros((NZ2, NB, NB))
 
     # Numerators for O bond when P excluded:
     # If O repays, next mO'=0.
@@ -893,10 +895,12 @@ def solve_regime_01(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
                 EtauO_rep[iz2, iBO, iBP] = EtO
                 EtauO_def[iz2, iBO, iBP] = EtO_def
                 EtauP_aut[iz2, iBO, iBP] = EtP
+                qO_pol[iz2, iBO, iBP] = float(np.sum(p_bO * qO))
+                qP_pol[iz2, iBO, iBP] = 0.0
 
     return dict(VO=VO01, VP=VP01, dO=dO01, dP=dP01, mu=mu01,
                 EbO_rep=EbO_rep, EtauO_rep=EtauO_rep, EtauO_def=EtauO_def,
-                EtauP_aut=EtauP_aut)
+                EtauP_aut=EtauP_aut, qO_pol=qO_pol, qP_pol=qP_pol)
 
 
 def solve_regime_10(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP, N_O, N_P):
@@ -924,6 +928,8 @@ def solve_regime_10(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
     EtauP_rep = np.zeros((NZ2, NB, NB))
     EtauP_def = np.zeros((NZ2, NB, NB))
     EtauO_aut = np.zeros((NZ2, NB, NB))
+    qO_pol = np.zeros((NZ2, NB, NB))
+    qP_pol = np.zeros((NZ2, NB, NB))
 
     # Numerators for P bond with O excluded:
     NP00 = N_P[0, 0]
@@ -1007,10 +1013,12 @@ def solve_regime_10(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
                 EtauP_rep[iz2, iBO, iBP] = EtP
                 EtauP_def[iz2, iBO, iBP] = EtP_def
                 EtauO_aut[iz2, iBO, iBP] = EtO
+                qO_pol[iz2, iBO, iBP] = 0.0
+                qP_pol[iz2, iBO, iBP] = float(np.sum(p_bP * qP))
 
     return dict(VO=VO10, VP=VP10, dO=dO10, dP=dP10, mu=mu10,
                 EbP_rep=EbP_rep, EtauP_rep=EtauP_rep, EtauP_def=EtauP_def,
-                EtauO_aut=EtauO_aut)
+                EtauO_aut=EtauO_aut, qO_pol=qO_pol, qP_pol=qP_pol)
 
 
 def solve_regime_11(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP):
@@ -1034,6 +1042,8 @@ def solve_regime_11(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
 
     EtauO_aut = np.zeros((NZ2, NB, NB))
     EtauP_aut = np.zeros((NZ2, NB, NB))
+    qO_pol = np.zeros((NZ2, NB, NB))
+    qP_pol = np.zeros((NZ2, NB, NB))
 
     EVO00 = EV_VO[0, 0]; EVO01 = EV_VO[0, 1]; EVO10 = EV_VO[1, 0]; EVO11e = EV_VO[1, 1]
     EVP00 = EV_VP[0, 0]; EVP01 = EV_VP[0, 1]; EVP10 = EV_VP[1, 0]; EVP11e = EV_VP[1, 1]
@@ -1073,7 +1083,7 @@ def solve_regime_11(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
         EtauP_aut[iz2, :, :] = EtP
 
     return dict(VO=VO11, VP=VP11, dO=dO11, dP=dP11, mu=mu11,
-                EtauO_aut=EtauO_aut, EtauP_aut=EtauP_aut)
+                EtauO_aut=EtauO_aut, EtauP_aut=EtauP_aut, qO_pol=qO_pol, qP_pol=qP_pol)
 
 
 # ============================================================
@@ -1144,7 +1154,7 @@ def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: Static
         eq.dP = (1.0 - params.damp) * eq.dP + params.damp * dP_new
         eq.muL = (1.0 - params.damp) * eq.muL + params.damp * mu_new
 
-        # store policies needed for simulation (only fully computed for 00 here)
+        # store policies needed for simulation (all regimes)
         eq.EbO_rep[:, :, :, 0, 0] = out00["EbO_rep"]
         eq.EtauO_rep[:, :, :, 0, 0] = out00["EtauO_rep"]
         eq.EtauO_def[:, :, :, 0, 0] = out00["EtauO_def"]
@@ -1162,8 +1172,24 @@ def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: Static
         eq.qO_pol[:, :, :, 0, 0] = out00["qO_pol"]
         eq.qP_pol[:, :, :, 0, 0] = out00["qP_pol"]
 
-        # for other regimes, keep simple expected tau objects from outputs if you want
-        # (left as extension; the key regime for contagion is (0,0).)
+        eq.EbO_rep[:, :, :, 0, 1] = out01["EbO_rep"]
+        eq.EtauO_rep[:, :, :, 0, 1] = out01["EtauO_rep"]
+        eq.EtauO_def[:, :, :, 0, 1] = out01["EtauO_def"]
+        eq.EtauP_def[:, :, :, 0, 1] = out01["EtauP_aut"]
+        eq.qO_pol[:, :, :, 0, 1] = out01["qO_pol"]
+        eq.qP_pol[:, :, :, 0, 1] = out01["qP_pol"]
+
+        eq.EbP_rep[:, :, :, 1, 0] = out10["EbP_rep"]
+        eq.EtauP_rep[:, :, :, 1, 0] = out10["EtauP_rep"]
+        eq.EtauP_def[:, :, :, 1, 0] = out10["EtauP_def"]
+        eq.EtauO_def[:, :, :, 1, 0] = out10["EtauO_aut"]
+        eq.qO_pol[:, :, :, 1, 0] = out10["qO_pol"]
+        eq.qP_pol[:, :, :, 1, 0] = out10["qP_pol"]
+
+        eq.EtauO_def[:, :, :, 1, 1] = out11["EtauO_aut"]
+        eq.EtauP_def[:, :, :, 1, 1] = out11["EtauP_aut"]
+        eq.qO_pol[:, :, :, 1, 1] = out11["qO_pol"]
+        eq.qP_pol[:, :, :, 1, 1] = out11["qP_pol"]
 
         if diff < params.tol:
             print("Converged.")
@@ -1237,10 +1263,10 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
         # O expected policy conditional on repay
         if DO[t] == 1:
             bO_p[t] = 0.0
-            tauO[t] = float(eq.EtauO_def[iz2, iBO, iBP, 0, 0])
+            tauO[t] = float(eq.EtauO_def[iz2, iBO, iBP, mO, mP])
         else:
-            bO_p[t] = float(eq.EbO_rep[iz2, iBO, iBP, 0, 0])
-            tauO[t] = float(eq.EtauO_rep[iz2, iBO, iBP, 0, 0])
+            bO_p[t] = float(eq.EbO_rep[iz2, iBO, iBP, mO, mP])
+            tauO[t] = float(eq.EtauO_rep[iz2, iBO, iBP, mO, mP])
 
         # --- P default draw (conditional in (0,0)) ---
         if mP == 1:
@@ -1258,7 +1284,7 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
         # P expected policy conditional on repay
         if DP[t] == 1:
             bP_p[t] = 0.0
-            tauP[t] = float(eq.EtauP_def[iz2, iBO, iBP, 0, 0])
+            tauP[t] = float(eq.EtauP_def[iz2, iBO, iBP, mO, mP])
         else:
             if (mO, mP) == (0, 0):
                 if DO[t] == 0:
@@ -1272,8 +1298,8 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
                 tauP[t] = float(eq.EtauP_rep[iz2, iBO, iBP, mO, mP])
 
         # prices used in simulation (expected/policy-averaged in regime (0,0))
-        qO[t] = float(eq.qO_pol[iz2, iBO, iBP, 0, 0])
-        qP[t] = float(eq.qP_pol[iz2, iBO, iBP, 0, 0])
+        qO[t] = float(eq.qO_pol[iz2, iBO, iBP, mO, mP])
+        qP[t] = float(eq.qP_pol[iz2, iBO, iBP, mO, mP])
 
         # ------------------------------------------------------------
         # NEW: allocations using GHH block
@@ -1395,15 +1421,15 @@ if __name__ == "__main__":
 
     eq = solve_stationary_appendixC(params, grids, Pi2, static)
 
-sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
-               T=10000, burn=2000, seed=123)
+    sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
+                   T=10000, burn=2000, seed=123)
 
-ev = event_study_around_defaults(sim, window=10)
-if ev is not None:
-    print("Event study computed with", ev["num_events"], "events.")
-    idx0 = 10  # event time 0 location for window=10
-    print("Avg P default at t=0:", ev["DP"][idx0])
-    print("Avg qP at t=0:", ev["qP"][idx0])
-    print("Avg yP at t=0:", ev["yP"][idx0])
+    ev = event_study_around_defaults(sim, window=10)
+    if ev is not None:
+        print("Event study computed with", ev["num_events"], "events.")
+        idx0 = 10  # event time 0 location for window=10
+        print("Avg P default at t=0:", ev["DP"][idx0])
+        print("Avg qP at t=0:", ev["qP"][idx0])
+        print("Avg yP at t=0:", ev["yP"][idx0])
 
    
