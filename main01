@@ -1,6 +1,8 @@
 import numpy as np
 import math
+import time
 from dataclasses import dataclass
+from numba import njit, prange
 
 # ============================================================
 # 0. Params / grids (your calibration table + solver knobs)
@@ -125,166 +127,195 @@ def build_joint_z(params: Params):
 
 # ============================================================
 # 2. Static household block (GHH + consumption tax)
+#    Now using numba-friendly precompute
 # ============================================================
 
-def ghh_labor(z, tau, theta, nu):
-    # l(z,tau) = ( z / (theta*(1+tau)) )^(1/nu)
-    return (z / (theta * (1.0 + tau))) ** (1.0 / nu)
-
-def private_utility(c, l, params: Params):
-    inside = c - params.theta * (l ** (1 + params.nu)) / (1 + params.nu)
-    u = np.full_like(inside, -1e12, dtype=float)
-    ok = inside > 0
-    u[ok] = (inside[ok] ** (1 - params.sigma_H)) / (1 - params.sigma_H)
-    return u
-
-def v_public(g, params: Params):
-    g = np.asarray(g, dtype=float)
-    out = np.full_like(g, -1e12, dtype=float)
-    ok = g > 0
-    out[ok] = params.omega_g * (g[ok] ** (1 - params.sigma_H)) / (1 - params.sigma_H)
-    return out
-
-
-@dataclass
-class StaticBlock:
-    # arrays [NZ2, NT]
-    uO: np.ndarray
-    TO: np.ndarray
-    uO_def: np.ndarray
-    TO_def: np.ndarray
-
-    uP: np.ndarray
-    TP: np.ndarray
-    uP_def: np.ndarray
-    TP_def: np.ndarray
-
-
-def precompute_static(params: Params, grids: Grids, zO, zP, zO_def, zP_def):
+@njit
+def _precompute_static_arrays(zO, zP, zO_def, zP_def, tauO, tauP,
+                               theta, nu, sigma_H, omega_g):
+    """Precompute static household block arrays for all (z, tau)."""
     NZ2 = zO.size
+    NTO = tauO.size
+    NTP = tauP.size
 
-    # O normal
-    tauO = grids.tauO
-    lO = ghh_labor(zO[:, None], tauO[None, :], params.theta, params.nu)
-    yO = zO[:, None] * lO
-    cO = yO / (1.0 + tauO[None, :])
-    TO = tauO[None, :] * cO
-    uO = private_utility(cO, lO, params)
+    uO = np.empty((NZ2, NTO))
+    TO = np.empty((NZ2, NTO))
+    uO_def = np.empty((NZ2, NTO))
+    TO_def = np.empty((NZ2, NTO))
+    uP = np.empty((NZ2, NTP))
+    TP = np.empty((NZ2, NTP))
+    uP_def = np.empty((NZ2, NTP))
+    TP_def = np.empty((NZ2, NTP))
 
-    # O default productivity
-    lO_d = ghh_labor(zO_def[:, None], tauO[None, :], params.theta, params.nu)
-    yO_d = zO_def[:, None] * lO_d
-    cO_d = yO_d / (1.0 + tauO[None, :])
-    TO_d = tauO[None, :] * cO_d
-    uO_d = private_utility(cO_d, lO_d, params)
+    for iz in range(NZ2):
+        # O normal
+        for it in range(NTO):
+            z = zO[iz]; tau = tauO[it]
+            l = (z / (theta * (1.0 + tau))) ** (1.0 / nu)
+            y = z * l
+            c = y / (1.0 + tau)
+            T = tau * c
+            inside = c - theta * (l ** (1.0 + nu)) / (1.0 + nu)
+            if inside > 0:
+                uO[iz, it] = (inside ** (1.0 - sigma_H)) / (1.0 - sigma_H)
+            else:
+                uO[iz, it] = -1e12
+            TO[iz, it] = T
 
-    # P normal
-    tauP = grids.tauP
-    lP = ghh_labor(zP[:, None], tauP[None, :], params.theta, params.nu)
-    yP = zP[:, None] * lP
-    cP = yP / (1.0 + tauP[None, :])
-    TP = tauP[None, :] * cP
-    uP = private_utility(cP, lP, params)
+            # O default
+            zd = zO_def[iz]
+            ld = (zd / (theta * (1.0 + tau))) ** (1.0 / nu)
+            yd = zd * ld
+            cd = yd / (1.0 + tau)
+            Td = tau * cd
+            inside_d = cd - theta * (ld ** (1.0 + nu)) / (1.0 + nu)
+            if inside_d > 0:
+                uO_def[iz, it] = (inside_d ** (1.0 - sigma_H)) / (1.0 - sigma_H)
+            else:
+                uO_def[iz, it] = -1e12
+            TO_def[iz, it] = Td
 
-    # P default productivity
-    lP_d = ghh_labor(zP_def[:, None], tauP[None, :], params.theta, params.nu)
-    yP_d = zP_def[:, None] * lP_d
-    cP_d = yP_d / (1.0 + tauP[None, :])
-    TP_d = tauP[None, :] * cP_d
-    uP_d = private_utility(cP_d, lP_d, params)
+        # P normal
+        for it in range(NTP):
+            z = zP[iz]; tau = tauP[it]
+            l = (z / (theta * (1.0 + tau))) ** (1.0 / nu)
+            y = z * l
+            c = y / (1.0 + tau)
+            T = tau * c
+            inside = c - theta * (l ** (1.0 + nu)) / (1.0 + nu)
+            if inside > 0:
+                uP[iz, it] = (inside ** (1.0 - sigma_H)) / (1.0 - sigma_H)
+            else:
+                uP[iz, it] = -1e12
+            TP[iz, it] = T
 
-    return StaticBlock(uO=uO, TO=TO, uO_def=uO_d, TO_def=TO_d,
-                       uP=uP, TP=TP, uP_def=uP_d, TP_def=TP_d)
+            # P default
+            zd = zP_def[iz]
+            ld = (zd / (theta * (1.0 + tau))) ** (1.0 / nu)
+            yd = zd * ld
+            cd = yd / (1.0 + tau)
+            Td = tau * cd
+            inside_d = cd - theta * (ld ** (1.0 + nu)) / (1.0 + nu)
+            if inside_d > 0:
+                uP_def[iz, it] = (inside_d ** (1.0 - sigma_H)) / (1.0 - sigma_H)
+            else:
+                uP_def[iz, it] = -1e12
+            TP_def[iz, it] = Td
+
+    return uO, TO, uO_def, TO_def, uP, TP, uP_def, TP_def
 
 
 # ============================================================
-# 3. EV helpers (logsumexp + default logit)
+# 3. Numba EV helpers
 # ============================================================
 
-def logsumexp_and_probs(W, rho):
-    """
-    inclusive = rho * log(sum(exp(W/rho))) and softmax probs
-    W: (..., A)
-    """
-    W = np.asarray(W, dtype=float)
-    m = np.max(W, axis=-1, keepdims=True)
-    ex = np.exp((W - m) / rho)
-    S = np.sum(ex, axis=-1, keepdims=True)
-    probs = ex / S
-    inc = rho * (np.log(S) + m / rho)
-    return inc[..., 0], probs
+@njit
+def _v_pub(g, omega_g, sigma_H):
+    """Public goods utility for scalar g."""
+    if g > 0:
+        return omega_g * (g ** (1.0 - sigma_H)) / (1.0 - sigma_H)
+    else:
+        return -1e12
 
-def default_prob(Vdef, Vrep, rho_d):
-    mx = np.maximum(Vdef, Vrep)
+
+@njit
+def _logsumexp_1d(W, rho):
+    """
+    For 1d array W, compute:
+      inc = rho * log(sum(exp(W/rho)))
+      probs = softmax(W/rho)
+    Returns (inc_scalar, probs_array).
+    """
+    n = W.size
+    mx = W[0]
+    for i in range(1, n):
+        if W[i] > mx:
+            mx = W[i]
+    S = 0.0
+    probs = np.empty(n)
+    for i in range(n):
+        probs[i] = np.exp((W[i] - mx) / rho)
+        S += probs[i]
+    for i in range(n):
+        probs[i] /= S
+    inc = rho * (np.log(S) + mx / rho)
+    return inc, probs
+
+
+@njit
+def _default_prob(Vdef, Vrep, rho_d):
+    mx = max(Vdef, Vrep)
     num = np.exp((Vdef - mx) / rho_d)
     den = num + np.exp((Vrep - mx) / rho_d)
     return num / den
 
-def inclusive_two(Vdef, Vrep, rho_d, gamma):
-    mx = np.maximum(Vdef, Vrep)
-    inc = gamma * rho_d + rho_d * (np.log(np.exp((Vdef - mx) / rho_d) + np.exp((Vrep - mx) / rho_d)) + mx / rho_d)
-    return inc
+
+@njit
+def _inclusive_two(Vdef, Vrep, rho_d, gamma):
+    mx = max(Vdef, Vrep)
+    return gamma * rho_d + rho_d * (np.log(np.exp((Vdef - mx) / rho_d) + np.exp((Vrep - mx) / rho_d)) + mx / rho_d)
 
 
-# ============================================================
-# 4. Price solver for one-period bonds (Appendix-C style)
-#    For a given branch, solve lender consumption c then q = N * c^{sigma_L}
-#    where N = beta_L E[ mu_{t+1} (1-d_{t+1}) ].
-# ============================================================
+@njit
+def _solve_c_newton_vec(A, K, sigma_L, maxit, tol):
+    """Solve c + c^sigma_L * K = A element-wise for 2D arrays."""
+    rows, cols = K.shape
+    c = np.empty((rows, cols))
+    for i in range(rows):
+        for j in range(cols):
+            ci = max(A, 1e-12)
+            for _ in range(maxit):
+                c_pow = ci ** sigma_L
+                f = ci + c_pow * K[i, j] - A
+                if abs(f) < tol:
+                    break
+                df = 1.0 + sigma_L * (ci ** (sigma_L - 1.0)) * K[i, j]
+                ci = max(ci - f / df, 1e-12)
+            c[i, j] = ci
+    return c
 
-def solve_c_newton(A, K, sigma_L, maxit=30, tol=1e-12):
-    """
-    Solve scalar equation: c + c^{sigma_L} * K = A
-    Vectorized over c if A,K are arrays.
-    """
-    c = np.maximum(A, 1e-12).astype(float)
-    for _ in range(maxit):
-        c_pow = c ** sigma_L
-        f = c + c_pow * K - A
-        if np.max(np.abs(f)) < tol:
-            break
-        df = 1.0 + sigma_L * (c ** (sigma_L - 1.0)) * K
-        c_new = c - f / df
-        c = np.maximum(c_new, 1e-12)
+
+@njit
+def _solve_c_newton_1d(A, K, sigma_L, maxit, tol):
+    """Solve c + c^sigma_L * K = A element-wise for 1D array K."""
+    n = K.size
+    c = np.empty(n)
+    for i in range(n):
+        ci = max(A, 1e-12)
+        for _ in range(maxit):
+            c_pow = ci ** sigma_L
+            f = ci + c_pow * K[i] - A
+            if abs(f) < tol:
+                break
+            df = 1.0 + sigma_L * (ci ** (sigma_L - 1.0)) * K[i]
+            ci = max(ci - f / df, 1e-12)
+        c[i] = ci
     return c
 
 
 # ============================================================
-# 5. Container for equilibrium objects (4 regimes)
+# 4. Container for equilibrium objects (4 regimes)
 # ============================================================
 
 @dataclass
 class Eq:
-    # Values V_O, V_P over full state (z2, bO, bP, mO, mP)
     VO: np.ndarray
     VP: np.ndarray
-
-    # Default probabilities in market states (set =1 in excluded)
     dO: np.ndarray
     dP: np.ndarray
-
-    # Lender marginal utility mu = C_L^{-sigma_L}
     muL: np.ndarray
-
-    # Expected repay policies conditional on repay, and tau in autarky/default
     EbO_rep: np.ndarray
     EtauO_rep: np.ndarray
     EtauO_def: np.ndarray
-
     EbP_rep: np.ndarray
     EtauP_rep: np.ndarray
     EtauP_def: np.ndarray
-
-    # Conditional P objects for simulation in regime (0,0):
     dP_if_Orep: np.ndarray
     EbP_if_Orep: np.ndarray
     EtauP_if_Orep: np.ndarray
     dP_if_Odef: np.ndarray
     EbP_if_Odef: np.ndarray
     EtauP_if_Odef: np.ndarray
-
-    # Prices for regime-specific branches (for simulation / diagnostics)
-    # (0,0): policy-averaged prices (not profile)
     qO_pol: np.ndarray
     qP_pol: np.ndarray
 
@@ -296,21 +327,16 @@ def init_eq(params: Params, grids: Grids):
 
     VO = np.zeros(shape)
     VP = np.zeros(shape)
-
     dO = np.zeros(shape)
     dP = np.zeros(shape)
-
     muL = np.full(shape, params.y_L ** (-params.sigma_L))
 
     EbO_rep = np.zeros(shape); EtauO_rep = np.zeros(shape); EtauO_def = np.zeros(shape)
     EbP_rep = np.zeros(shape); EtauP_rep = np.zeros(shape); EtauP_def = np.zeros(shape)
-
     dP_if_Orep = np.zeros(shape); EbP_if_Orep = np.zeros(shape); EtauP_if_Orep = np.zeros(shape)
     dP_if_Odef = np.zeros(shape); EbP_if_Odef = np.zeros(shape); EtauP_if_Odef = np.zeros(shape)
-
     qO_pol = np.zeros(shape); qP_pol = np.zeros(shape)
 
-    # excluded states: force default prob=1 (pricing payoff 0 if accidentally referenced)
     dO[:, :, :, 1, :] = 1.0
     dP[:, :, :, :, 1] = 1.0
 
@@ -323,14 +349,10 @@ def init_eq(params: Params, grids: Grids):
 
 
 # ============================================================
-# 6. Expectations over z' for continuation and for numerators
+# 5. Expectations over z' (vectorized, no numba needed)
 # ============================================================
 
 def expected_over_z(Pi2, X):
-    """
-    For each current z2, compute E_{z'}[X(z')].
-    If X has shape (NZ2, ...), returns shape (NZ2, ...).
-    """
     NZ2 = Pi2.shape[0]
     Xr = X.reshape(NZ2, -1)
     EX = Pi2 @ Xr
@@ -338,14 +360,6 @@ def expected_over_z(Pi2, X):
 
 
 def build_expectations(params: Params, grids: Grids, Pi2, eq: Eq):
-    """
-    Build:
-      EV_VO[mO,mP]: E_z'[ VO(z', bO, bP, mO,mP) ] for all bO,bP
-      EV_VP similarly
-    and:
-      N_O[mO,mP] = beta_L E_z'[ mu(z',bO,bP,mO,mP) * (1-dO(z',...)) ]
-      N_P similarly
-    """
     NZ2 = params.NZ * params.NZ
     NB = grids.bO.size
 
@@ -354,7 +368,6 @@ def build_expectations(params: Params, grids: Grids, Pi2, eq: Eq):
     N_O = np.zeros((2, 2, NZ2, NB, NB))
     N_P = np.zeros((2, 2, NZ2, NB, NB))
 
-    # slices by next-market states
     for mO in (0, 1):
         for mP in (0, 1):
             VO_slice = eq.VO[:, :, :, mO, mP]
@@ -371,26 +384,24 @@ def build_expectations(params: Params, grids: Grids, Pi2, eq: Eq):
 
 
 # ============================================================
-# 7. Core regime solver: (mO,mP) = (0,0)
-#    Fully Appendix-C: Stackelberg + four default outcomes + three price schedules
+# 6. Core regime solver (0,0) -- fully numba JIT
 # ============================================================
 
-def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP, N_O, N_P):
-    """
-    Returns dictionaries of updated arrays for regime (0,0) only:
-      VO00[z2,iBO,iBP], VP00[...], dO00[...], dP00[...], mu00[...]
-      plus conditional P objects for simulation and policy-averaged prices.
-    """
-    NZ2 = params.NZ * params.NZ
-    NB = grids.bO.size
-    NT_O = grids.tauO.size
-    NT_P = grids.tauP.size
-
-    bOgrid = grids.bO
-    bPgrid = grids.bP
-
-    iBO0 = grids.iBO0
-    iBP0 = grids.iBP0
+@njit
+def _solve_regime_00_core(
+    NZ2, NB, NT_O, NT_P,
+    bOgrid, bPgrid, tauO, tauP,
+    iBO0, iBP0,
+    uO_all, TO_all, uO_def_all, TO_def_all,
+    uP_all, TP_all, uP_def_all, TP_def_all,
+    NO_00, NP_00, NO_01, NP_10,
+    EVOO_00, EVOO_01, EVOO_10, EVOO_11,
+    EVPP_00, EVPP_01, EVPP_10, EVPP_11,
+    sigma_H, omega_g, beta, sigma_L, y_L,
+    rho_a, rho_d, euler_gamma,
+    newton_maxit, newton_tol
+):
+    """Core (0,0) regime solver, fully compiled with numba."""
 
     # outputs
     VO00 = np.zeros((NZ2, NB, NB))
@@ -398,78 +409,40 @@ def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
     dO00 = np.zeros((NZ2, NB, NB))
     dP00 = np.zeros((NZ2, NB, NB))
     mu00 = np.zeros((NZ2, NB, NB))
-
-    # expected repay policies (conditional on repay)
     EbO_rep = np.zeros((NZ2, NB, NB))
     EtauO_rep = np.zeros((NZ2, NB, NB))
     EtauO_def = np.zeros((NZ2, NB, NB))
-
     EbP_rep = np.zeros((NZ2, NB, NB))
     EtauP_rep = np.zeros((NZ2, NB, NB))
     EtauP_def = np.zeros((NZ2, NB, NB))
-
-    # conditional P objects for simulation
-    dP_if_Orep = np.zeros((NZ2, NB, NB))
-    EbP_if_Orep = np.zeros((NZ2, NB, NB))
-    EtauP_if_Orep = np.zeros((NZ2, NB, NB))
-    dP_if_Odef = np.zeros((NZ2, NB, NB))
-    EbP_if_Odef = np.zeros((NZ2, NB, NB))
-    EtauP_if_Odef = np.zeros((NZ2, NB, NB))
-
-    # policy-averaged prices
-    qO_pol = np.zeros((NZ2, NB, NB))
-    qP_pol = np.zeros((NZ2, NB, NB))
-
-    # --- price numerators for relevant NEXT market states ---
-    # both repay => next (0,0)
-    NO_00 = N_O[0, 0]  # [z2, bO', bP']
-    NP_00 = N_P[0, 0]
-
-    # only O issues when P defaults => next (0,1) with bP'=0
-    NO_01 = N_O[0, 1]  # [z2, bO', bP']
-    # only P issues when O defaults => next (1,0) with bO'=0
-    NP_10 = N_P[1, 0]
-
-    # --- continuation expectations for relevant NEXT states ---
-    EVOO_00 = EV_VO[0, 0]
-    EVOO_01 = EV_VO[0, 1]
-    EVOO_10 = EV_VO[1, 0]
-    EVOO_11 = EV_VO[1, 1]
-
-    EVPP_00 = EV_VP[0, 0]
-    EVPP_01 = EV_VP[0, 1]
-    EVPP_10 = EV_VP[1, 0]
-    EVPP_11 = EV_VP[1, 1]
-
-    # For speed, build P action index grids once (bP',tauP):
-    # WrepP[bP', tauP] but we will compute as (tauP x bP') = (NT_P x NB)
-    tauP = grids.tauP
-    tauO = grids.tauO
+    dP_if_Orep_out = np.zeros((NZ2, NB, NB))
+    EbP_if_Orep_out = np.zeros((NZ2, NB, NB))
+    EtauP_if_Orep_out = np.zeros((NZ2, NB, NB))
+    dP_if_Odef_out = np.zeros((NZ2, NB, NB))
+    EbP_if_Odef_out = np.zeros((NZ2, NB, NB))
+    EtauP_if_Odef_out = np.zeros((NZ2, NB, NB))
+    qO_pol_out = np.zeros((NZ2, NB, NB))
+    qP_pol_out = np.zeros((NZ2, NB, NB))
 
     for iz2 in range(NZ2):
-        # Pre-slice static arrays at this z2
-        uO_tau = static.uO[iz2, :]       # (NT_O,)
-        TO_tau = static.TO[iz2, :]       # (NT_O,)
-        uO_d_tau = static.uO_def[iz2, :]
-        TO_d_tau = static.TO_def[iz2, :]
+        uO_tau = uO_all[iz2, :]
+        TO_tau = TO_all[iz2, :]
+        uO_d_tau = uO_def_all[iz2, :]
+        TO_d_tau = TO_def_all[iz2, :]
+        uP_tau = uP_all[iz2, :]
+        TP_tau = TP_all[iz2, :]
+        uP_d_tau = uP_def_all[iz2, :]
+        TP_d_tau = TP_def_all[iz2, :]
 
-        uP_tau = static.uP[iz2, :]       # (NT_P,)
-        TP_tau = static.TP[iz2, :]
-        uP_d_tau = static.uP_def[iz2, :]
-        TP_d_tau = static.TP_def[iz2, :]
-
-        # price numerators at this z2
-        NO00 = NO_00[iz2, :, :]  # (NB x NB) over (bO',bP')
+        NO00 = NO_00[iz2, :, :]
         NP00 = NP_00[iz2, :, :]
-        NO01_bO = NO_01[iz2, :, iBP0]  # (NB,) only O issues, bP'=0
-        NP10_bP = NP_10[iz2, iBO0, :]  # (NB,) only P issues, bO'=0
+        NO01_bO = NO_01[iz2, :, iBP0]
+        NP10_bP = NP_10[iz2, iBO0, :]
 
-        # continuation at this z2
-        EVO00 = EVOO_00[iz2, :, :]   # (NB x NB)
-        EVO01 = EVOO_01[iz2, :, :]   # (NB x NB) but we'll use bP=0 column
-        EVO10 = EVOO_10[iz2, :, :]   # use bO=0 row for O default branch
+        EVO00 = EVOO_00[iz2, :, :]
+        EVO01 = EVOO_01[iz2, :, :]
+        EVO10 = EVOO_10[iz2, :, :]
         EVO11 = EVOO_11[iz2, :, :]
-
         EVP00 = EVPP_00[iz2, :, :]
         EVP01 = EVPP_01[iz2, :, :]
         EVP10 = EVPP_10[iz2, :, :]
@@ -480,42 +453,43 @@ def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
             for iBP in range(NB):
                 bP_now = bPgrid[iBP]
 
-                # ------------------------------------------------------------
-                # A) PRICE SCHEDULES for this (z2, bO, bP) in regime (0,0)
-                # ------------------------------------------------------------
-                # 1) both issue (none default): solve c matrix for each (bO',bP')
-                A_both = params.y_L + bO_now + bP_now
-                K_both = NO00 * bOgrid[:, None] + NP00 * bPgrid[None, :]
-                c_both = solve_c_newton(A_both, K_both, params.sigma_L,
-                                        maxit=params.newton_maxit, tol=params.newton_tol)
-                c_pow = c_both ** params.sigma_L
-                qO_both = NO00 * c_pow
-                qP_both = NP00 * c_pow
+                # A) PRICE SCHEDULES
+                # 1) both issue
+                A_both = y_L + bO_now + bP_now
+                K_both = np.empty((NB, NB))
+                for i in range(NB):
+                    for j in range(NB):
+                        K_both[i, j] = NO00[i, j] * bOgrid[i] + NP00[i, j] * bPgrid[j]
+                c_both = _solve_c_newton_vec(A_both, K_both, sigma_L, newton_maxit, newton_tol)
+                qO_both = np.empty((NB, NB))
+                qP_both = np.empty((NB, NB))
+                for i in range(NB):
+                    for j in range(NB):
+                        cp = c_both[i, j] ** sigma_L
+                        qO_both[i, j] = NO00[i, j] * cp
+                        qP_both[i, j] = NP00[i, j] * cp
 
-                # 2) only O issues (P defaults): c vector over bO'
-                A_onlyO = params.y_L + bO_now
-                K_onlyO = NO01_bO * bOgrid
-                c_onlyO = solve_c_newton(A_onlyO, K_onlyO, params.sigma_L,
-                                         maxit=params.newton_maxit, tol=params.newton_tol)
-                qO_onlyO = NO01_bO * (c_onlyO ** params.sigma_L)
+                # 2) only O issues (P defaults)
+                A_onlyO = y_L + bO_now
+                K_onlyO = np.empty(NB)
+                for i in range(NB):
+                    K_onlyO[i] = NO01_bO[i] * bOgrid[i]
+                c_onlyO = _solve_c_newton_1d(A_onlyO, K_onlyO, sigma_L, newton_maxit, newton_tol)
+                qO_onlyO = np.empty(NB)
+                for i in range(NB):
+                    qO_onlyO[i] = NO01_bO[i] * (c_onlyO[i] ** sigma_L)
 
-                # 3) only P issues (O defaults): c vector over bP'
-                A_onlyP = params.y_L + bP_now
-                K_onlyP = NP10_bP * bPgrid
-                c_onlyP = solve_c_newton(A_onlyP, K_onlyP, params.sigma_L,
-                                         maxit=params.newton_maxit, tol=params.newton_tol)
-                qP_onlyP = NP10_bP * (c_onlyP ** params.sigma_L)
+                # 3) only P issues (O defaults)
+                A_onlyP = y_L + bP_now
+                K_onlyP = np.empty(NB)
+                for i in range(NB):
+                    K_onlyP[i] = NP10_bP[i] * bPgrid[i]
+                c_onlyP = _solve_c_newton_1d(A_onlyP, K_onlyP, sigma_L, newton_maxit, newton_tol)
+                qP_onlyP = np.empty(NB)
+                for i in range(NB):
+                    qP_onlyP[i] = NP10_bP[i] * (c_onlyP[i] ** sigma_L)
 
-                # ------------------------------------------------------------
-                # B) FOLLOWER (P) given O REPAYS with a chosen bO'
-                #    Note: P's response depends on O's bO' (NOT on tauO).
-                # ------------------------------------------------------------
-                # For each O debt choice index jBOp, compute:
-                #   - P repay inclusive value VrepP[jBOp]
-                #   - P default value VdefP[jBOp]
-                #   - dP_given_Orep[jBOp]
-                #   - p_bP_condrep[jBOp, kBPp]
-                #   - expected (bP', tauP) conditional on repay
+                # B) FOLLOWER (P) given O REPAYS
                 VP_cond_Orep = np.zeros(NB)
                 dP_cond_Orep = np.zeros(NB)
                 p_bP_condrep = np.zeros((NB, NB))
@@ -524,163 +498,167 @@ def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
                 EtauP_def_cond = np.zeros(NB)
 
                 for jBOp in range(NB):
-                    # ----- P repay value index over (tauP,bP') using qP_both[jBOp, kBPp]
-                    # Build Wrep as (NT_P x NB)
-                    qP_row = qP_both[jBOp, :]   # depends on bP'
-                    # gP(tau,bP') = TP(tau) + qP(bP')*bP' - bP_now
-                    gP = TP_tau[:, None] + qP_row[None, :] * bPgrid[None, :] - bP_now
-                    Urep = uP_tau[:, None] + v_public(gP, params)
-                    # continuation if repay: next state (0,0), debts (bO',bP')
-                    Cont = params.beta * EVP00[jBOp, :][None, :]
-                    Wrep = Urep + Cont
-
-                    Vrep_inc, probs = logsumexp_and_probs(Wrep.reshape(-1), params.rho_a)
-                    VrepP = params.euler_gamma * params.rho_a + Vrep_inc
+                    # P repay value index over (tauP, bP')
+                    W_flat = np.empty(NT_P * NB)
+                    idx = 0
+                    for it in range(NT_P):
+                        for jb in range(NB):
+                            gP = TP_tau[it] + qP_both[jBOp, jb] * bPgrid[jb] - bP_now
+                            vg = _v_pub(gP, omega_g, sigma_H)
+                            cont = beta * EVP00[jBOp, jb]
+                            W_flat[idx] = uP_tau[it] + vg + cont
+                            idx += 1
+                    Vrep_inc, probs = _logsumexp_1d(W_flat, rho_a)
+                    VrepP = euler_gamma * rho_a + Vrep_inc
 
                     # conditional-on-repay expectations
-                    probs2 = probs.reshape(NT_P, NB)
-                    p_bP = probs2.sum(axis=0)                    # marginal over bP'
-                    EbP = float(np.sum(p_bP * bPgrid))
-                    Etau = float(np.sum(probs2.sum(axis=1) * tauP))
+                    p_bP = np.zeros(NB)
+                    p_tau = np.zeros(NT_P)
+                    idx = 0
+                    for it in range(NT_P):
+                        for jb in range(NB):
+                            p_bP[jb] += probs[idx]
+                            p_tau[it] += probs[idx]
+                            idx += 1
+                    EbP = 0.0
+                    for jb in range(NB):
+                        EbP += p_bP[jb] * bPgrid[jb]
+                    Etau = 0.0
+                    for it in range(NT_P):
+                        Etau += p_tau[it] * tauP[it]
 
-                    # ----- P default value: choose tauP in default/autarky, next state (0,1), debt (bO',0)
-                    Cont_def = params.beta * EVP01[jBOp, iBP0]
-                    Wdef_tau = uP_d_tau + v_public(TP_d_tau, params) + Cont_def
-                    Vdef_inc, p_tau_def = logsumexp_and_probs(Wdef_tau, params.rho_a)
-                    VdefP = params.euler_gamma * params.rho_a + Vdef_inc
-                    Etau_def = float(np.sum(p_tau_def * tauP))
+                    # P default value
+                    Wdef_tau = np.empty(NT_P)
+                    Cont_def = beta * EVP01[jBOp, iBP0]
+                    for it in range(NT_P):
+                        vg = _v_pub(TP_d_tau[it], omega_g, sigma_H)
+                        Wdef_tau[it] = uP_d_tau[it] + vg + Cont_def
+                    Vdef_inc, p_tau_def = _logsumexp_1d(Wdef_tau, rho_a)
+                    VdefP = euler_gamma * rho_a + Vdef_inc
+                    Etau_def = 0.0
+                    for it in range(NT_P):
+                        Etau_def += p_tau_def[it] * tauP[it]
 
-                    dP_here = float(default_prob(VdefP, VrepP, params.rho_d))
-                    VP_here = float(inclusive_two(VdefP, VrepP, params.rho_d, params.euler_gamma))
+                    dP_here = _default_prob(VdefP, VrepP, rho_d)
+                    VP_here = _inclusive_two(VdefP, VrepP, rho_d, euler_gamma)
 
                     VP_cond_Orep[jBOp] = VP_here
                     dP_cond_Orep[jBOp] = dP_here
-                    p_bP_condrep[jBOp, :] = p_bP
+                    for jb in range(NB):
+                        p_bP_condrep[jBOp, jb] = p_bP[jb]
                     EbP_condrep[jBOp] = EbP
                     EtauP_condrep[jBOp] = Etau
                     EtauP_def_cond[jBOp] = Etau_def
 
-                # ------------------------------------------------------------
-                # C) FOLLOWER (P) when O DEFAULTS (only P issues)
-                # ------------------------------------------------------------
-                # P repay with qP_onlyP, continuation next (1,0); P default next (1,1).
-                # Here O's next debt is 0 (iBO0).
-                qP = qP_onlyP  # (NB,)
-                gP = TP_tau[:, None] + qP[None, :] * bPgrid[None, :] - bP_now
-                Urep = uP_tau[:, None] + v_public(gP, params)
-                Cont = params.beta * EVP10[iBO0, :][None, :]
-                Wrep = Urep + Cont
-                Vrep_inc, probs = logsumexp_and_probs(Wrep.reshape(-1), params.rho_a)
-                VrepP_od = params.euler_gamma * params.rho_a + Vrep_inc
-                probs2 = probs.reshape(NT_P, NB)
-                p_bP_od = probs2.sum(axis=0)
-                EbP_od = float(np.sum(p_bP_od * bPgrid))
-                EtauP_od = float(np.sum(probs2.sum(axis=1) * tauP))
+                # C) FOLLOWER (P) when O DEFAULTS
+                W_flat = np.empty(NT_P * NB)
+                idx = 0
+                for it in range(NT_P):
+                    for jb in range(NB):
+                        gP = TP_tau[it] + qP_onlyP[jb] * bPgrid[jb] - bP_now
+                        vg = _v_pub(gP, omega_g, sigma_H)
+                        cont = beta * EVP10[iBO0, jb]
+                        W_flat[idx] = uP_tau[it] + vg + cont
+                        idx += 1
+                Vrep_inc_od, probs_od = _logsumexp_1d(W_flat, rho_a)
+                VrepP_od = euler_gamma * rho_a + Vrep_inc_od
+                p_bP_od = np.zeros(NB)
+                idx = 0
+                for it in range(NT_P):
+                    for jb in range(NB):
+                        p_bP_od[jb] += probs_od[idx]
+                        idx += 1
+                EbP_od = 0.0
+                for jb in range(NB):
+                    EbP_od += p_bP_od[jb] * bPgrid[jb]
+                p_tau_od = np.zeros(NT_P)
+                idx = 0
+                for it in range(NT_P):
+                    for jb in range(NB):
+                        p_tau_od[it] += probs_od[idx]
+                        idx += 1
+                EtauP_od = 0.0
+                for it in range(NT_P):
+                    EtauP_od += p_tau_od[it] * tauP[it]
 
-                Cont_def = params.beta * EVP11[iBO0, iBP0]
-                Wdef_tau = uP_d_tau + v_public(TP_d_tau, params) + Cont_def
-                Vdef_inc, p_tau_def = logsumexp_and_probs(Wdef_tau, params.rho_a)
-                VdefP_od = params.euler_gamma * params.rho_a + Vdef_inc
-                dP_od = float(default_prob(VdefP_od, VrepP_od, params.rho_d))
-                VP_od = float(inclusive_two(VdefP_od, VrepP_od, params.rho_d, params.euler_gamma))
-                EtauP_def_od = float(np.sum(p_tau_def * tauP))
+                Wdef_tau_od = np.empty(NT_P)
+                Cont_def_od = beta * EVP11[iBO0, iBP0]
+                for it in range(NT_P):
+                    vg = _v_pub(TP_d_tau[it], omega_g, sigma_H)
+                    Wdef_tau_od[it] = uP_d_tau[it] + vg + Cont_def_od
+                Vdef_inc_od, p_tau_def_od = _logsumexp_1d(Wdef_tau_od, rho_a)
+                VdefP_od = euler_gamma * rho_a + Vdef_inc_od
+                dP_od = _default_prob(VdefP_od, VrepP_od, rho_d)
+                VP_od = _inclusive_two(VdefP_od, VrepP_od, rho_d, euler_gamma)
 
-                # ------------------------------------------------------------
-                # D) LEADER (O) repay value over (bO',tauO) anticipating P
-                # ------------------------------------------------------------
-                # For each jBOp and tauO, compute expected value:
-                #   With prob (1-dP_cond_Orep[jBOp]): P repays and chooses bP' ~ p_bP_condrep[jBOp]
-                #   With prob dP_cond_Orep[jBOp]: P defaults (O issues alone at qO_onlyO[jBOp])
-                #
-                # Use expectation over bP' because qO_both and continuation depend on bP'.
-                W_O_rep = np.full((NB, NT_O), -1e12, dtype=float)
-
+                # D) LEADER (O) repay value
+                W_O_flat = np.empty(NB * NT_O)
                 for jBOp in range(NB):
                     bO_prime = bOgrid[jBOp]
                     dPj = dP_cond_Orep[jBOp]
-                    p_bPj = p_bP_condrep[jBOp, :]  # conditional on P repaying
 
-                    # Part when P repays: expectation over bP' only (tauP integrated out)
-                    # Flow: uO(tauO) + E_{bP'}[ v( TO(tauO)+qO_both(jBOp,bP')*bO'-bO_now ) ]
-                    qO_row = qO_both[jBOp, :]  # depends on bP'
-                    g_rep = TO_tau[:, None] + (qO_row[None, :] * bO_prime) - bO_now
-                    flow_rep = uO_tau[:, None] + v_public(g_rep, params)
+                    for it in range(NT_O):
+                        # Part when P repays: expectation over bP'
+                        EV_profile = 0.0
+                        for jb in range(NB):
+                            g_rep = TO_tau[it] + qO_both[jBOp, jb] * bO_prime - bO_now
+                            vg = _v_pub(g_rep, omega_g, sigma_H)
+                            cont = beta * EVO00[jBOp, jb]
+                            EV_profile += p_bP_condrep[jBOp, jb] * (uO_tau[it] + vg + cont)
 
-                    # continuation: beta * E_{bP'}[ EVO00(jBOp,bP') ]
-                    cont_rep = params.beta * EVO00[jBOp, :][None, :]
+                        # Part when P defaults
+                        g_def = TO_tau[it] + qO_onlyO[jBOp] * bO_prime - bO_now
+                        vg_def = _v_pub(g_def, omega_g, sigma_H)
+                        cont_def_O = beta * EVO01[jBOp, iBP0]
+                        EV_defbranch = uO_tau[it] + vg_def + cont_def_O
 
-                    # expectation over bP' using p_bPj
-                    EV_profile = (flow_rep + cont_rep) @ p_bPj
+                        W_O_flat[jBOp * NT_O + it] = (1.0 - dPj) * EV_profile + dPj * EV_defbranch
 
-                    # Part when P defaults: O issues alone (qO_onlyO[jBOp]) and continuation to (0,1) with bP=0
-                    g_def = TO_tau + qO_onlyO[jBOp] * bO_prime - bO_now
-                    flow_def = uO_tau + v_public(g_def, params)
-                    cont_def_O = params.beta * EVO01[jBOp, iBP0]
-                    EV_defbranch = flow_def + cont_def_O
+                Vrep_inc_O, probs_O = _logsumexp_1d(W_O_flat, rho_a)
+                VrepO = euler_gamma * rho_a + Vrep_inc_O
 
-                    # Total W for each tauO
-                    W_O_rep[jBOp, :] = (1.0 - dPj) * EV_profile + dPj * EV_defbranch
+                # marginal over bO'
+                p_bO = np.zeros(NB)
+                p_tauO = np.zeros(NT_O)
+                for jBOp in range(NB):
+                    for it in range(NT_O):
+                        p_bO[jBOp] += probs_O[jBOp * NT_O + it]
+                        p_tauO[it] += probs_O[jBOp * NT_O + it]
+                EbO = 0.0
+                for jb in range(NB):
+                    EbO += p_bO[jb] * bOgrid[jb]
+                EtO = 0.0
+                for it in range(NT_O):
+                    EtO += p_tauO[it] * tauO[it]
 
-                # inclusive over O repay actions
-                Vrep_inc, probs_O = logsumexp_and_probs(W_O_rep.reshape(-1), params.rho_a)
-                VrepO = params.euler_gamma * params.rho_a + Vrep_inc
-                probsO2 = probs_O.reshape(NB, NT_O)
-                p_bO = probsO2.sum(axis=1)  # marginal over bO'
-
-                EbO = float(np.sum(p_bO * bOgrid))
-                EtO = float(np.sum(probsO2.sum(axis=0) * tauO))
-
-                # ------------------------------------------------------------
-                # E) O default value: choose tauO in default and anticipate P under O default
-                # ------------------------------------------------------------
-                # O default flow uses (uO_def + v(TO_def)), no repayment of bO_now, no issuance
-                # continuation uses P outcomes under O default:
-                #   if P repays: next (1,0), debts (0,bP')
-                #   if P defaults: next (1,1), debts (0,0)
-                cont_Odef = params.beta * (
-                    (1.0 - dP_od) * np.sum(p_bP_od * EVO10[iBO0, :]) +
+                # E) O default value
+                cont_Odef = beta * (
+                    (1.0 - dP_od) * _dot(p_bP_od, EVO10[iBO0, :]) +
                     dP_od * EVO11[iBO0, iBP0]
                 )
-                W_Odef_tau = uO_d_tau + v_public(TO_d_tau, params) + cont_Odef
-                Vdef_inc, p_tau_defO = logsumexp_and_probs(W_Odef_tau, params.rho_a)
-                VdefO = params.euler_gamma * params.rho_a + Vdef_inc
-                EtO_def = float(np.sum(p_tau_defO * tauO))
+                W_Odef = np.empty(NT_O)
+                for it in range(NT_O):
+                    vg = _v_pub(TO_d_tau[it], omega_g, sigma_H)
+                    W_Odef[it] = uO_d_tau[it] + vg + cont_Odef
+                Vdef_inc_O, p_tau_defO = _logsumexp_1d(W_Odef, rho_a)
+                VdefO = euler_gamma * rho_a + Vdef_inc_O
+                EtO_def = 0.0
+                for it in range(NT_O):
+                    EtO_def += p_tau_defO[it] * tauO[it]
 
-                # default probability for O
-                dO_here = float(default_prob(VdefO, VrepO, params.rho_d))
-                VO_here = float(inclusive_two(VdefO, VrepO, params.rho_d, params.euler_gamma))
+                dO_here = _default_prob(VdefO, VrepO, rho_d)
+                VO_here = _inclusive_two(VdefO, VrepO, rho_d, euler_gamma)
 
-                # ------------------------------------------------------------
-                # F) Aggregate P value & default prob given O mixes and defaults
-                # ------------------------------------------------------------
-                # If O repays: O chooses bO' distribution p_bO, then P gets VP_cond_Orep[bO']
-                VP_if_Orep = float(np.sum(p_bO * VP_cond_Orep))
-                dP_if_Orep_here = float(np.sum(p_bO * dP_cond_Orep))
-                EbP_if_Orep_here = float(np.sum(p_bO * EbP_condrep))
-                EtP_if_Orep_here = float(np.sum(p_bO * EtauP_condrep))
+                # F) Aggregate P
+                VP_if_Orep = _dot(p_bO, VP_cond_Orep)
+                dP_if_Orep_here = _dot(p_bO, dP_cond_Orep)
+                EbP_if_Orep_here = _dot(p_bO, EbP_condrep)
+                EtP_if_Orep_here = _dot(p_bO, EtauP_condrep)
 
-                # If O defaults: VP_od
                 VP_here = (1.0 - dO_here) * VP_if_Orep + dO_here * VP_od
-
                 dP_here = (1.0 - dO_here) * dP_if_Orep_here + dO_here * dP_od
 
-                # ------------------------------------------------------------
-                # G) Lender expected consumption and mu in regime (0,0)
-                # ------------------------------------------------------------
-                # Branch O repays:
-                # For each bO' with prob p_bO:
-                #   - P repays w.p. (1-dP_cond_Orep[bO'])
-                #       lender C = y_L + bO_now + bP_now - E_{bP'|rep}[ qO_both*bO' + qP_both*bP' ]
-                #   - P defaults w.p. dP_cond_Orep[bO']
-                #       lender C = y_L + bO_now - qO_onlyO*bO'
-                #
-                # Branch O defaults:
-                #   - P repays w.p. (1-dP_od):
-                #       lender C = y_L + bP_now - E_{bP'|rep}[ qP_onlyP*bP' ]
-                #   - P defaults w.p. dP_od:
-                #       lender C = y_L
-                #
-                # Compute expectations:
+                # G) Lender consumption
                 C_Orep = 0.0
                 qO_pol_sum = 0.0
                 qP_pol_sum = 0.0
@@ -690,39 +668,39 @@ def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
 
                 for jBOp in range(NB):
                     pb = p_bO[jBOp]
-                    if pb == 0:
+                    if pb == 0.0:
                         continue
                     bO_prime = bOgrid[jBOp]
                     dPj = dP_cond_Orep[jBOp]
-                    p_bPj = p_bP_condrep[jBOp, :]
 
-                    # if P repays
-                    # expected purchase cost: E[qO_both*bO' + qP_both*bP']
-                    cost_both = float(np.sum(p_bPj * (qO_both[jBOp, :] * bO_prime + qP_both[jBOp, :] * bPgrid)))
-                    C_both = params.y_L + bO_now + bP_now - cost_both
+                    cost_both = 0.0
+                    eq_qO = 0.0
+                    eq_qP = 0.0
+                    for jb in range(NB):
+                        cost_both += p_bP_condrep[jBOp, jb] * (qO_both[jBOp, jb] * bO_prime + qP_both[jBOp, jb] * bPgrid[jb])
+                        eq_qO += p_bP_condrep[jBOp, jb] * qO_both[jBOp, jb]
+                        eq_qP += p_bP_condrep[jBOp, jb] * qP_both[jBOp, jb]
 
-                    # if P defaults
-                    C_onlyO = params.y_L + bO_now - qO_onlyO[jBOp] * bO_prime
-
+                    C_both = y_L + bO_now + bP_now - cost_both
+                    C_onlyO = y_L + bO_now - qO_onlyO[jBOp] * bO_prime
                     C_Orep += pb * ((1.0 - dPj) * C_both + dPj * C_onlyO)
 
-                    # policy-averaged prices for reporting: expected qO, qP conditional on repay branch
-                    # use P's repay distribution
-                    qO_pol_sum += pb * (1.0 - dPj) * float(np.sum(p_bPj * qO_both[jBOp, :]))
-                    qP_pol_sum += pb * (1.0 - dPj) * float(np.sum(p_bPj * qP_both[jBOp, :]))
+                    qO_pol_sum += pb * (1.0 - dPj) * eq_qO
+                    qP_pol_sum += pb * (1.0 - dPj) * eq_qP
 
                     EbP_rep_sum += pb * EbP_condrep[jBOp]
                     EtP_rep_sum += pb * EtauP_condrep[jBOp]
                     EtP_def_sum += pb * EtauP_def_cond[jBOp]
 
-                # O default branch:
-                cost_onlyP = float(np.sum(p_bP_od * (qP_onlyP * bPgrid)))
-                C_onlyP = params.y_L + bP_now - cost_onlyP
-                C_Odef = (1.0 - dP_od) * C_onlyP + dP_od * params.y_L
-
+                cost_onlyP = 0.0
+                for jb in range(NB):
+                    cost_onlyP += p_bP_od[jb] * qP_onlyP[jb] * bPgrid[jb]
+                C_onlyP = y_L + bP_now - cost_onlyP
+                C_Odef = (1.0 - dP_od) * C_onlyP + dP_od * y_L
                 C_total = (1.0 - dO_here) * C_Orep + dO_here * C_Odef
-                C_total = max(C_total, 1e-12)
-                mu_here = C_total ** (-params.sigma_L)
+                if C_total < 1e-12:
+                    C_total = 1e-12
+                mu_here = C_total ** (-sigma_L)
 
                 # store
                 VO00[iz2, iBO, iBP] = VO_here
@@ -730,162 +708,159 @@ def solve_regime_00(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
                 dO00[iz2, iBO, iBP] = dO_here
                 dP00[iz2, iBO, iBP] = dP_here
                 mu00[iz2, iBO, iBP] = mu_here
-
                 EbO_rep[iz2, iBO, iBP] = EbO
                 EtauO_rep[iz2, iBO, iBP] = EtO
                 EtauO_def[iz2, iBO, iBP] = EtO_def
-
                 EbP_rep[iz2, iBO, iBP] = EbP_rep_sum
                 EtauP_rep[iz2, iBO, iBP] = EtP_rep_sum
                 EtauP_def[iz2, iBO, iBP] = EtP_def_sum
+                dP_if_Orep_out[iz2, iBO, iBP] = dP_if_Orep_here
+                EbP_if_Orep_out[iz2, iBO, iBP] = EbP_if_Orep_here
+                EtauP_if_Orep_out[iz2, iBO, iBP] = EtP_if_Orep_here
+                dP_if_Odef_out[iz2, iBO, iBP] = dP_od
+                EbP_if_Odef_out[iz2, iBO, iBP] = EbP_od
+                EtauP_if_Odef_out[iz2, iBO, iBP] = EtauP_od
+                qO_pol_out[iz2, iBO, iBP] = qO_pol_sum
+                qP_pol_out[iz2, iBO, iBP] = qP_pol_sum
 
-                dP_if_Orep[iz2, iBO, iBP] = dP_if_Orep_here
-                EbP_if_Orep[iz2, iBO, iBP] = EbP_if_Orep_here
-                EtauP_if_Orep[iz2, iBO, iBP] = EtP_if_Orep_here
+    return (VO00, VP00, dO00, dP00, mu00,
+            EbO_rep, EtauO_rep, EtauO_def,
+            EbP_rep, EtauP_rep, EtauP_def,
+            dP_if_Orep_out, EbP_if_Orep_out, EtauP_if_Orep_out,
+            dP_if_Odef_out, EbP_if_Odef_out, EtauP_if_Odef_out,
+            qO_pol_out, qP_pol_out)
 
-                dP_if_Odef[iz2, iBO, iBP] = dP_od
-                EbP_if_Odef[iz2, iBO, iBP] = EbP_od
-                EtauP_if_Odef[iz2, iBO, iBP] = EtauP_od
 
-                qO_pol[iz2, iBO, iBP] = qO_pol_sum
-                qP_pol[iz2, iBO, iBP] = qP_pol_sum
-
-    return dict(
-        VO=VO00, VP=VP00, dO=dO00, dP=dP00, mu=mu00,
-        EbO_rep=EbO_rep, EtauO_rep=EtauO_rep, EtauO_def=EtauO_def,
-        EbP_rep=EbP_rep, EtauP_rep=EtauP_rep, EtauP_def=EtauP_def,
-        dP_if_Orep=dP_if_Orep, EbP_if_Orep=EbP_if_Orep, EtauP_if_Orep=EtauP_if_Orep,
-        dP_if_Odef=dP_if_Odef, EbP_if_Odef=EbP_if_Odef, EtauP_if_Odef=EtauP_if_Odef,
-        qO_pol=qO_pol, qP_pol=qP_pol
-    )
+@njit
+def _dot(a, b):
+    s = 0.0
+    for i in range(a.size):
+        s += a[i] * b[i]
+    return s
 
 
 # ============================================================
-# 8. Regimes (0,1), (1,0), (1,1)
-#    These are simpler: single-issuer Stackelberg degenerates.
+# 7. Regime (0,1): O has access, P excluded -- numba JIT
 # ============================================================
 
-def solve_regime_01(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP, N_O, N_P):
-    """
-    (mO,mP) = (0,1): O has access, P excluded.
-    P cannot issue; P's next access uses lambda.
-    O chooses default vs repay and (bO',tauO) if repay.
-    """
-    NZ2 = params.NZ * params.NZ
-    NB = grids.bO.size
-    NT_O = grids.tauO.size
-    NT_P = grids.tauP.size
-
-    bOgrid = grids.bO
-    iBO0 = grids.iBO0
-    iBP0 = grids.iBP0
-    tauO = grids.tauO
-    tauP = grids.tauP
-
+@njit
+def _solve_regime_01_core(
+    NZ2, NB, NT_O, NT_P,
+    bOgrid, tauO, tauP,
+    iBO0, iBP0,
+    uO_all, TO_all, uO_def_all, TO_def_all,
+    uP_def_all, TP_def_all,
+    NO00, NO01,
+    EVO00, EVO01, EVO10, EVO11,
+    EVP00, EVP01, EVP10, EVP11,
+    sigma_H, omega_g, beta, sigma_L, y_L,
+    rho_a, rho_d, euler_gamma, lam_reentry,
+    newton_maxit, newton_tol
+):
     VO01 = np.zeros((NZ2, NB, NB))
     VP01 = np.zeros((NZ2, NB, NB))
     dO01 = np.zeros((NZ2, NB, NB))
-    dP01 = np.ones((NZ2, NB, NB))  # excluded (no market) => treat as 1
+    dP01 = np.ones((NZ2, NB, NB))
     mu01 = np.zeros((NZ2, NB, NB))
-
     EbO_rep = np.zeros((NZ2, NB, NB))
     EtauO_rep = np.zeros((NZ2, NB, NB))
     EtauO_def = np.zeros((NZ2, NB, NB))
-
-    # P excluded: only tau choice in autarky
     EtauP_aut = np.zeros((NZ2, NB, NB))
 
-    # Numerators for O bond when P excluded:
-    # If O repays, next mO'=0.
-    # For P, mP' is 0 w.p lambda else 1, and bP' = 0 always.
-    NO00 = N_O[0, 0]   # next (0,0)
-    NO01 = N_O[0, 1]   # next (0,1)
-    EVO00 = EV_VO[0, 0]; EVO01 = EV_VO[0, 1]; EVO10 = EV_VO[1, 0]; EVO11 = EV_VO[1, 1]
-    EVP00 = EV_VP[0, 0]; EVP01 = EV_VP[0, 1]; EVP10 = EV_VP[1, 0]; EVP11 = EV_VP[1, 1]
-
     for iz2 in range(NZ2):
-        uO_tau = static.uO[iz2, :]
-        TO_tau = static.TO[iz2, :]
-        uO_d_tau = static.uO_def[iz2, :]
-        TO_d_tau = static.TO_def[iz2, :]
+        uO_tau = uO_all[iz2, :]
+        TO_tau = TO_all[iz2, :]
+        uO_d_tau = uO_def_all[iz2, :]
+        TO_d_tau = TO_def_all[iz2, :]
+        uP_d_tau = uP_def_all[iz2, :]
+        TP_d_tau = TP_def_all[iz2, :]
 
-        uP_d_tau = static.uP_def[iz2, :]
-        TP_d_tau = static.TP_def[iz2, :]
-
-        # Precompute P excluded value components (depends on O policy through next mO)
         for iBO in range(NB):
             bO_now = bOgrid[iBO]
             for iBP in range(NB):
-                # in excluded state we treat bP_now irrelevant; debt effectively 0
-                # -------- Price schedule for O issuance in this regime ----------
-                # Numerator mixture over next mP':
-                NO_mix = params.lam_reentry * NO00[iz2, :, iBP0] + (1.0 - params.lam_reentry) * NO01[iz2, :, iBP0]
-                A = params.y_L + bO_now
-                K = NO_mix * bOgrid
-                c = solve_c_newton(A, K, params.sigma_L, params.newton_maxit, params.newton_tol)
-                qO = NO_mix * (c ** params.sigma_L)
+                # Price schedule: mixture over next mP'
+                NO_mix = np.empty(NB)
+                for i in range(NB):
+                    NO_mix[i] = lam_reentry * NO00[iz2, i, iBP0] + (1.0 - lam_reentry) * NO01[iz2, i, iBP0]
+                A = y_L + bO_now
+                K = np.empty(NB)
+                for i in range(NB):
+                    K[i] = NO_mix[i] * bOgrid[i]
+                c = _solve_c_newton_1d(A, K, sigma_L, newton_maxit, newton_tol)
+                qO = np.empty(NB)
+                for i in range(NB):
+                    qO[i] = NO_mix[i] * (c[i] ** sigma_L)
 
-                # -------- O repay value over (bO',tauO) ----------
-                # continuation if O repays: next mO'=0, bO=bO'
-                # next mP' mixture due to reentry:
-                cont_rep = params.beta * (
-                    params.lam_reentry * EVO00[iz2, :, iBP0] + (1.0 - params.lam_reentry) * EVO01[iz2, :, iBP0]
-                )  # shape (NB,)
+                # O repay value
+                cont_rep = np.empty(NB)
+                for i in range(NB):
+                    cont_rep[i] = beta * (lam_reentry * EVO00[iz2, i, iBP0] + (1.0 - lam_reentry) * EVO01[iz2, i, iBP0])
 
-                # Wrep[jBOp, tauO]
-                g = TO_tau[None, :] + (qO[:, None] * bOgrid[:, None]) - bO_now
-                Wrep = uO_tau[None, :] + v_public(g, params) + cont_rep[:, None]
-                Vrep_inc, pO = logsumexp_and_probs(Wrep.reshape(-1), params.rho_a)
-                VrepO = params.euler_gamma * params.rho_a + Vrep_inc
-                pO2 = pO.reshape(NB, NT_O)
-                p_bO = pO2.sum(axis=1)
-                EbO = float(np.sum(p_bO * bOgrid))
-                EtO = float(np.sum(pO2.sum(axis=0) * tauO))
+                W_flat = np.empty(NB * NT_O)
+                for jBOp in range(NB):
+                    for it in range(NT_O):
+                        g = TO_tau[it] + qO[jBOp] * bOgrid[jBOp] - bO_now
+                        vg = _v_pub(g, omega_g, sigma_H)
+                        W_flat[jBOp * NT_O + it] = uO_tau[it] + vg + cont_rep[jBOp]
 
-                # -------- O default value (next mO'=1) ----------
-                # P remains excluded today; next mP' still follows reentry.
-                cont_def = params.beta * (
-                    params.lam_reentry * EVO10[iz2, iBO0, iBP0] + (1.0 - params.lam_reentry) * EVO11[iz2, iBO0, iBP0]
-                )
-                Wdef_tau = uO_d_tau + v_public(TO_d_tau, params) + cont_def
-                Vdef_inc, p_tau_def = logsumexp_and_probs(Wdef_tau, params.rho_a)
-                VdefO = params.euler_gamma * params.rho_a + Vdef_inc
-                EtO_def = float(np.sum(p_tau_def * tauO))
+                Vrep_inc, pO = _logsumexp_1d(W_flat, rho_a)
+                VrepO = euler_gamma * rho_a + Vrep_inc
 
-                dO_here = float(default_prob(VdefO, VrepO, params.rho_d))
-                VO_here = float(inclusive_two(VdefO, VrepO, params.rho_d, params.euler_gamma))
+                p_bO = np.zeros(NB)
+                p_tauO = np.zeros(NT_O)
+                for jBOp in range(NB):
+                    for it in range(NT_O):
+                        idx = jBOp * NT_O + it
+                        p_bO[jBOp] += pO[idx]
+                        p_tauO[it] += pO[idx]
+                EbO = _dot(p_bO, bOgrid)
+                EtO = _dot(p_tauO, tauO)
 
-                # -------- P excluded value (chooses tau each period) ----------
-                # P today excluded => chooses tauP using default productivity objects (no borrowing),
-                # continuation mixes:
-                #   mP' = 0 w.p lambda (reenter), else 1
-                # O's next m depends on O default probability today:
-                #   if O repays (prob 1-dO): mO' = 0
-                #   if O defaults (prob dO): mO' = 1
-                # When P reenters (mP'=0), next state is either (0,0) or (1,0) with debt bO' determined by O.
-                # We approximate using O's expected repay debt EbO (smooth policy) mapped to grid.
-                iBO_star = int(np.argmin(np.abs(bOgrid - EbO)))
+                # O default value
+                cont_def = beta * (lam_reentry * EVO10[iz2, iBO0, iBP0] + (1.0 - lam_reentry) * EVO11[iz2, iBO0, iBP0])
+                W_def = np.empty(NT_O)
+                for it in range(NT_O):
+                    vg = _v_pub(TO_d_tau[it], omega_g, sigma_H)
+                    W_def[it] = uO_d_tau[it] + vg + cont_def
+                Vdef_inc, p_tau_def = _logsumexp_1d(W_def, rho_a)
+                VdefO = euler_gamma * rho_a + Vdef_inc
+                EtO_def = _dot(p_tau_def, tauO)
 
-                cont_P_reenter = (1.0 - dO_here) * EVP00[iz2, iBO_star, iBP0] + dO_here * EVP10[iz2, iBO0, iBP0]
-                cont_P_stay = (1.0 - dO_here) * EVP01[iz2, iBO_star, iBP0] + dO_here * EVP11[iz2, iBO0, iBP0]
-                contP = params.beta * (params.lam_reentry * cont_P_reenter + (1.0 - params.lam_reentry) * cont_P_stay)
+                dO_here = _default_prob(VdefO, VrepO, rho_d)
+                VO_here = _inclusive_two(VdefO, VrepO, rho_d, euler_gamma)
 
-                W_tauP = uP_d_tau + v_public(TP_d_tau, params) + contP
-                VP_inc, p_tauP = logsumexp_and_probs(W_tauP, params.rho_a)
-                VP_here = params.euler_gamma * params.rho_a + VP_inc
-                EtP = float(np.sum(p_tauP * tauP))
+                # P excluded value
+                iBO_star = 0
+                min_diff = abs(bOgrid[0] - EbO)
+                for i in range(1, NB):
+                    d = abs(bOgrid[i] - EbO)
+                    if d < min_diff:
+                        min_diff = d
+                        iBO_star = i
 
-                # -------- lender consumption / mu (only O can issue if it repays) ----------
-                # If O repays: C = y_L + bO_now - E[qO*bO']
-                # Use expected bO' under repay p_bO:
-                cost = float(np.sum(p_bO * (qO * bOgrid)))
-                C_rep = params.y_L + bO_now - cost
-                C_def = params.y_L
+                cont_P_re = (1.0 - dO_here) * EVP00[iz2, iBO_star, iBP0] + dO_here * EVP10[iz2, iBO0, iBP0]
+                cont_P_st = (1.0 - dO_here) * EVP01[iz2, iBO_star, iBP0] + dO_here * EVP11[iz2, iBO0, iBP0]
+                contP = beta * (lam_reentry * cont_P_re + (1.0 - lam_reentry) * cont_P_st)
+
+                W_tauP = np.empty(NT_P)
+                for it in range(NT_P):
+                    vg = _v_pub(TP_d_tau[it], omega_g, sigma_H)
+                    W_tauP[it] = uP_d_tau[it] + vg + contP
+                VP_inc, p_tauP = _logsumexp_1d(W_tauP, rho_a)
+                VP_here = euler_gamma * rho_a + VP_inc
+                EtP = _dot(p_tauP, tauP)
+
+                # Lender mu
+                cost = 0.0
+                for i in range(NB):
+                    cost += p_bO[i] * qO[i] * bOgrid[i]
+                C_rep = y_L + bO_now - cost
+                C_def = y_L
                 C = (1.0 - dO_here) * C_rep + dO_here * C_def
-                C = max(C, 1e-12)
-                mu_here = C ** (-params.sigma_L)
+                if C < 1e-12:
+                    C = 1e-12
+                mu_here = C ** (-sigma_L)
 
-                # store
                 VO01[iz2, iBO, iBP] = VO_here
                 VP01[iz2, iBO, iBP] = VP_here
                 dO01[iz2, iBO, iBP] = dO_here
@@ -895,209 +870,351 @@ def solve_regime_01(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV
                 EtauO_def[iz2, iBO, iBP] = EtO_def
                 EtauP_aut[iz2, iBO, iBP] = EtP
 
-    return dict(VO=VO01, VP=VP01, dO=dO01, dP=dP01, mu=mu01,
-                EbO_rep=EbO_rep, EtauO_rep=EtauO_rep, EtauO_def=EtauO_def,
-                EtauP_aut=EtauP_aut)
+    return (VO01, VP01, dO01, dP01, mu01,
+            EbO_rep, EtauO_rep, EtauO_def, EtauP_aut)
 
 
-def solve_regime_10(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP, N_O, N_P):
-    """
-    (mO,mP) = (1,0): O excluded, P has access. Symmetric to regime_01.
-    """
-    NZ2 = params.NZ * params.NZ
-    NB = grids.bO.size
-    NT_P = grids.tauP.size
-    NT_O = grids.tauO.size
+# ============================================================
+# 8. Regime (1,0): O excluded, P has access -- numba JIT
+# ============================================================
 
-    bPgrid = grids.bP
-    iBO0 = grids.iBO0
-    iBP0 = grids.iBP0
-    tauP = grids.tauP
-    tauO = grids.tauO
-
+@njit
+def _solve_regime_10_core(
+    NZ2, NB, NT_O, NT_P,
+    bPgrid, tauO, tauP,
+    iBO0, iBP0,
+    uP_all, TP_all, uP_def_all, TP_def_all,
+    uO_def_all, TO_def_all,
+    NP00, NP10,
+    EVO00, EVO01, EVO10, EVO11,
+    EVP00, EVP01, EVP10, EVP11,
+    sigma_H, omega_g, beta, sigma_L, y_L,
+    rho_a, rho_d, euler_gamma, lam_reentry,
+    newton_maxit, newton_tol
+):
     VO10 = np.zeros((NZ2, NB, NB))
     VP10 = np.zeros((NZ2, NB, NB))
-    dO10 = np.ones((NZ2, NB, NB))  # excluded
+    dO10 = np.ones((NZ2, NB, NB))
     dP10 = np.zeros((NZ2, NB, NB))
     mu10 = np.zeros((NZ2, NB, NB))
-
     EbP_rep = np.zeros((NZ2, NB, NB))
     EtauP_rep = np.zeros((NZ2, NB, NB))
     EtauP_def = np.zeros((NZ2, NB, NB))
     EtauO_aut = np.zeros((NZ2, NB, NB))
 
-    # Numerators for P bond with O excluded:
-    NP00 = N_P[0, 0]
-    NP10 = N_P[1, 0]
-    EVO00 = EV_VO[0, 0]; EVO01 = EV_VO[0, 1]; EVO10 = EV_VO[1, 0]; EVO11 = EV_VO[1, 1]
-    EVP00 = EV_VP[0, 0]; EVP01 = EV_VP[0, 1]; EVP10 = EV_VP[1, 0]; EVP11 = EV_VP[1, 1]
-
     for iz2 in range(NZ2):
-        uP_tau = static.uP[iz2, :]
-        TP_tau = static.TP[iz2, :]
-        uP_d_tau = static.uP_def[iz2, :]
-        TP_d_tau = static.TP_def[iz2, :]
-
-        uO_d_tau = static.uO_def[iz2, :]
-        TO_d_tau = static.TO_def[iz2, :]
+        uP_tau = uP_all[iz2, :]
+        TP_tau = TP_all[iz2, :]
+        uP_d_tau = uP_def_all[iz2, :]
+        TP_d_tau = TP_def_all[iz2, :]
+        uO_d_tau = uO_def_all[iz2, :]
+        TO_d_tau = TO_def_all[iz2, :]
 
         for iBO in range(NB):
             for iBP in range(NB):
                 bP_now = bPgrid[iBP]
 
-                # P price schedule: numerator mixture over next mO' due to O reentry
-                # next mP'=0 if P repays
-                NP_mix = params.lam_reentry * NP00[iz2, iBO0, :] + (1.0 - params.lam_reentry) * NP10[iz2, iBO0, :]
-                A = params.y_L + bP_now
-                K = NP_mix * bPgrid
-                c = solve_c_newton(A, K, params.sigma_L, params.newton_maxit, params.newton_tol)
-                qP = NP_mix * (c ** params.sigma_L)
+                # P price schedule
+                NP_mix = np.empty(NB)
+                for i in range(NB):
+                    NP_mix[i] = lam_reentry * NP00[iz2, iBO0, i] + (1.0 - lam_reentry) * NP10[iz2, iBO0, i]
+                A = y_L + bP_now
+                K = np.empty(NB)
+                for i in range(NB):
+                    K[i] = NP_mix[i] * bPgrid[i]
+                c = _solve_c_newton_1d(A, K, sigma_L, newton_maxit, newton_tol)
+                qP = np.empty(NB)
+                for i in range(NB):
+                    qP[i] = NP_mix[i] * (c[i] ** sigma_L)
 
-                # P repay value over (bP',tauP)
-                # continuation mixes next mO' from reentry:
-                cont_rep = params.beta * (
-                    params.lam_reentry * EVP00[iz2, iBO0, :] + (1.0 - params.lam_reentry) * EVP10[iz2, iBO0, :]
-                )  # (NB,)
-                g = TP_tau[:, None] + (qP[None, :] * bPgrid[None, :]) - bP_now
-                Wrep = uP_tau[:, None] + v_public(g, params) + cont_rep[None, :]
-                Vrep_inc, probs = logsumexp_and_probs(Wrep.reshape(-1), params.rho_a)
-                VrepP = params.euler_gamma * params.rho_a + Vrep_inc
-                probs2 = probs.reshape(NT_P, NB)
-                p_bP = probs2.sum(axis=0)
-                EbP = float(np.sum(p_bP * bPgrid))
-                EtP = float(np.sum(probs2.sum(axis=1) * tauP))
+                # P repay value
+                cont_rep = np.empty(NB)
+                for i in range(NB):
+                    cont_rep[i] = beta * (lam_reentry * EVP00[iz2, iBO0, i] + (1.0 - lam_reentry) * EVP10[iz2, iBO0, i])
 
-                # P default value (next mP'=1)
-                cont_def = params.beta * (
-                    params.lam_reentry * EVP01[iz2, iBO0, iBP0] + (1.0 - params.lam_reentry) * EVP11[iz2, iBO0, iBP0]
-                )
-                Wdef_tau = uP_d_tau + v_public(TP_d_tau, params) + cont_def
-                Vdef_inc, p_tau_def = logsumexp_and_probs(Wdef_tau, params.rho_a)
-                VdefP = params.euler_gamma * params.rho_a + Vdef_inc
-                EtP_def = float(np.sum(p_tau_def * tauP))
+                W_flat = np.empty(NT_P * NB)
+                for it in range(NT_P):
+                    for jb in range(NB):
+                        g = TP_tau[it] + qP[jb] * bPgrid[jb] - bP_now
+                        vg = _v_pub(g, omega_g, sigma_H)
+                        W_flat[it * NB + jb] = uP_tau[it] + vg + cont_rep[jb]
+                Vrep_inc, probs = _logsumexp_1d(W_flat, rho_a)
+                VrepP = euler_gamma * rho_a + Vrep_inc
 
-                dP_here = float(default_prob(VdefP, VrepP, params.rho_d))
-                VP_here = float(inclusive_two(VdefP, VrepP, params.rho_d, params.euler_gamma))
+                p_bP = np.zeros(NB)
+                p_tauP = np.zeros(NT_P)
+                for it in range(NT_P):
+                    for jb in range(NB):
+                        idx = it * NB + jb
+                        p_bP[jb] += probs[idx]
+                        p_tauP[it] += probs[idx]
+                EbP = _dot(p_bP, bPgrid)
+                EtP = _dot(p_tauP, tauP)
 
-                # O excluded value (chooses tauO each period in autarky)
-                # continuation mixes mO' by reentry and mP' by P default decision today.
-                iBP_star = int(np.argmin(np.abs(bPgrid - EbP)))
-                cont_O_reenter = (1.0 - dP_here) * EVO00[iz2, iBO0, iBP_star] + dP_here * EVO01[iz2, iBO0, iBP0]
-                cont_O_stay = (1.0 - dP_here) * EVO10[iz2, iBO0, iBP_star] + dP_here * EVO11[iz2, iBO0, iBP0]
-                contO = params.beta * (params.lam_reentry * cont_O_reenter + (1.0 - params.lam_reentry) * cont_O_stay)
+                # P default value
+                cont_def = beta * (lam_reentry * EVP01[iz2, iBO0, iBP0] + (1.0 - lam_reentry) * EVP11[iz2, iBO0, iBP0])
+                W_def = np.empty(NT_P)
+                for it in range(NT_P):
+                    vg = _v_pub(TP_d_tau[it], omega_g, sigma_H)
+                    W_def[it] = uP_d_tau[it] + vg + cont_def
+                Vdef_inc, p_tau_def = _logsumexp_1d(W_def, rho_a)
+                VdefP = euler_gamma * rho_a + Vdef_inc
+                EtP_def = _dot(p_tau_def, tauP)
 
-                W_tauO = uO_d_tau + v_public(TO_d_tau, params) + contO
-                VO_inc, p_tauO = logsumexp_and_probs(W_tauO, params.rho_a)
-                VO_here = params.euler_gamma * params.rho_a + VO_inc
-                EtO = float(np.sum(p_tauO * tauO))
+                dP_here = _default_prob(VdefP, VrepP, rho_d)
+                VP_here = _inclusive_two(VdefP, VrepP, rho_d, euler_gamma)
 
-                # lender mu
-                cost = float(np.sum(p_bP * (qP * bPgrid)))
-                C_rep = params.y_L + bP_now - cost
-                C_def = params.y_L
-                C = (1.0 - dP_here) * C_rep + dP_here * C_def
-                C = max(C, 1e-12)
-                mu_here = C ** (-params.sigma_L)
+                # O excluded value
+                iBP_star = 0
+                min_diff = abs(bPgrid[0] - EbP)
+                for i in range(1, NB):
+                    d = abs(bPgrid[i] - EbP)
+                    if d < min_diff:
+                        min_diff = d
+                        iBP_star = i
+
+                cont_O_re = (1.0 - dP_here) * EVO00[iz2, iBO0, iBP_star] + dP_here * EVO01[iz2, iBO0, iBP0]
+                cont_O_st = (1.0 - dP_here) * EVO10[iz2, iBO0, iBP_star] + dP_here * EVO11[iz2, iBO0, iBP0]
+                contO = beta * (lam_reentry * cont_O_re + (1.0 - lam_reentry) * cont_O_st)
+
+                W_tauO = np.empty(NT_O)
+                for it in range(NT_O):
+                    vg = _v_pub(TO_d_tau[it], omega_g, sigma_H)
+                    W_tauO[it] = uO_d_tau[it] + vg + contO
+                VO_inc, p_tauO = _logsumexp_1d(W_tauO, rho_a)
+                VO_here = euler_gamma * rho_a + VO_inc
+                EtO = _dot(p_tauO, tauO)
+
+                # Lender mu
+                cost = 0.0
+                for i in range(NB):
+                    cost += p_bP[i] * qP[i] * bPgrid[i]
+                C_rep = y_L + bP_now - cost
+                C = (1.0 - dP_here) * C_rep + dP_here * y_L
+                if C < 1e-12:
+                    C = 1e-12
+                mu_here = C ** (-sigma_L)
 
                 VP10[iz2, iBO, iBP] = VP_here
                 VO10[iz2, iBO, iBP] = VO_here
                 dP10[iz2, iBO, iBP] = dP_here
                 mu10[iz2, iBO, iBP] = mu_here
-
                 EbP_rep[iz2, iBO, iBP] = EbP
                 EtauP_rep[iz2, iBO, iBP] = EtP
                 EtauP_def[iz2, iBO, iBP] = EtP_def
                 EtauO_aut[iz2, iBO, iBP] = EtO
 
-    return dict(VO=VO10, VP=VP10, dO=dO10, dP=dP10, mu=mu10,
-                EbP_rep=EbP_rep, EtauP_rep=EtauP_rep, EtauP_def=EtauP_def,
-                EtauO_aut=EtauO_aut)
+    return (VO10, VP10, dO10, dP10, mu10,
+            EbP_rep, EtauP_rep, EtauP_def, EtauO_aut)
 
 
-def solve_regime_11(params: Params, grids: Grids, static: StaticBlock, EV_VO, EV_VP):
-    """
-    (mO,mP) = (1,1): both excluded.
-    Each chooses tau in autarky; next m' for each is reentry with lambda.
-    """
-    NZ2 = params.NZ * params.NZ
-    NB = grids.bO.size
-    tauO = grids.tauO
-    tauP = grids.tauP
+# ============================================================
+# 9. Regime (1,1): both excluded -- numba JIT
+# ============================================================
 
-    iBO0 = grids.iBO0
-    iBP0 = grids.iBP0
-
+@njit
+def _solve_regime_11_core(
+    NZ2, NB, NT_O, NT_P,
+    tauO, tauP, iBO0, iBP0,
+    uO_def_all, TO_def_all,
+    uP_def_all, TP_def_all,
+    EVO00, EVO01, EVO10, EVO11,
+    EVP00, EVP01, EVP10, EVP11,
+    sigma_H, omega_g, beta, y_L, sigma_L,
+    rho_a, euler_gamma, lam_reentry
+):
     VO11 = np.zeros((NZ2, NB, NB))
     VP11 = np.zeros((NZ2, NB, NB))
     dO11 = np.ones((NZ2, NB, NB))
     dP11 = np.ones((NZ2, NB, NB))
-    mu11 = np.full((NZ2, NB, NB), params.y_L ** (-params.sigma_L))
-
+    mu11 = np.full((NZ2, NB, NB), y_L ** (-sigma_L))
     EtauO_aut = np.zeros((NZ2, NB, NB))
     EtauP_aut = np.zeros((NZ2, NB, NB))
 
-    EVO00 = EV_VO[0, 0]; EVO01 = EV_VO[0, 1]; EVO10 = EV_VO[1, 0]; EVO11e = EV_VO[1, 1]
-    EVP00 = EV_VP[0, 0]; EVP01 = EV_VP[0, 1]; EVP10 = EV_VP[1, 0]; EVP11e = EV_VP[1, 1]
-
+    lam = lam_reentry
     for iz2 in range(NZ2):
-        uO_d = static.uO_def[iz2, :]; TO_d = static.TO_def[iz2, :]
-        uP_d = static.uP_def[iz2, :]; TP_d = static.TP_def[iz2, :]
+        uO_d = uO_def_all[iz2, :]
+        TO_d = TO_def_all[iz2, :]
+        uP_d = uP_def_all[iz2, :]
+        TP_d = TP_def_all[iz2, :]
 
-        # continuation when both excluded: next mO' and mP' independent with lambda
-        # debts always 0
-        contO = params.beta * (
-            params.lam_reentry * params.lam_reentry * EVO00[iz2, iBO0, iBP0] +
-            params.lam_reentry * (1.0 - params.lam_reentry) * EVO01[iz2, iBO0, iBP0] +
-            (1.0 - params.lam_reentry) * params.lam_reentry * EVO10[iz2, iBO0, iBP0] +
-            (1.0 - params.lam_reentry) ** 2 * EVO11e[iz2, iBO0, iBP0]
+        contO = beta * (
+            lam * lam * EVO00[iz2, iBO0, iBP0] +
+            lam * (1.0 - lam) * EVO01[iz2, iBO0, iBP0] +
+            (1.0 - lam) * lam * EVO10[iz2, iBO0, iBP0] +
+            (1.0 - lam) ** 2 * EVO11[iz2, iBO0, iBP0]
         )
-        contP = params.beta * (
-            params.lam_reentry * params.lam_reentry * EVP00[iz2, iBO0, iBP0] +
-            params.lam_reentry * (1.0 - params.lam_reentry) * EVP01[iz2, iBO0, iBP0] +
-            (1.0 - params.lam_reentry) * params.lam_reentry * EVP10[iz2, iBO0, iBP0] +
-            (1.0 - params.lam_reentry) ** 2 * EVP11e[iz2, iBO0, iBP0]
+        contP = beta * (
+            lam * lam * EVP00[iz2, iBO0, iBP0] +
+            lam * (1.0 - lam) * EVP01[iz2, iBO0, iBP0] +
+            (1.0 - lam) * lam * EVP10[iz2, iBO0, iBP0] +
+            (1.0 - lam) ** 2 * EVP11[iz2, iBO0, iBP0]
         )
 
-        W_O = uO_d + v_public(TO_d, params) + contO
-        incO, pO = logsumexp_and_probs(W_O, params.rho_a)
-        VO_here = params.euler_gamma * params.rho_a + incO
-        EtO = float(np.sum(pO * tauO))
+        W_O = np.empty(NT_O)
+        for it in range(NT_O):
+            vg = _v_pub(TO_d[it], omega_g, sigma_H)
+            W_O[it] = uO_d[it] + vg + contO
+        incO, pO = _logsumexp_1d(W_O, rho_a)
+        VO_here = euler_gamma * rho_a + incO
+        EtO = _dot(pO, tauO)
 
-        W_P = uP_d + v_public(TP_d, params) + contP
-        incP, pP = logsumexp_and_probs(W_P, params.rho_a)
-        VP_here = params.euler_gamma * params.rho_a + incP
-        EtP = float(np.sum(pP * tauP))
+        W_P = np.empty(NT_P)
+        for it in range(NT_P):
+            vg = _v_pub(TP_d[it], omega_g, sigma_H)
+            W_P[it] = uP_d[it] + vg + contP
+        incP, pP = _logsumexp_1d(W_P, rho_a)
+        VP_here = euler_gamma * rho_a + incP
+        EtP = _dot(pP, tauP)
 
-        VO11[iz2, :, :] = VO_here
-        VP11[iz2, :, :] = VP_here
-        EtauO_aut[iz2, :, :] = EtO
-        EtauP_aut[iz2, :, :] = EtP
+        for iBO in range(NB):
+            for iBP in range(NB):
+                VO11[iz2, iBO, iBP] = VO_here
+                VP11[iz2, iBO, iBP] = VP_here
+                EtauO_aut[iz2, iBO, iBP] = EtO
+                EtauP_aut[iz2, iBO, iBP] = EtP
 
-    return dict(VO=VO11, VP=VP11, dO=dO11, dP=dP11, mu=mu11,
-                EtauO_aut=EtauO_aut, EtauP_aut=EtauP_aut)
+    return (VO11, VP11, dO11, dP11, mu11, EtauO_aut, EtauP_aut)
 
 
 # ============================================================
-# 9. Main stationary solver loop
+# 10. Wrapper functions calling numba cores
 # ============================================================
 
-def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: StaticBlock):
+def solve_regime_00(params, grids, uO, TO, uO_def, TO_def, uP, TP, uP_def, TP_def,
+                    EV_VO, EV_VP, N_O, N_P):
+    NZ2 = params.NZ * params.NZ
+    NB = grids.bO.size
+    NT_O = grids.tauO.size
+    NT_P = grids.tauP.size
+    result = _solve_regime_00_core(
+        NZ2, NB, NT_O, NT_P,
+        grids.bO, grids.bP, grids.tauO, grids.tauP,
+        grids.iBO0, grids.iBP0,
+        uO, TO, uO_def, TO_def,
+        uP, TP, uP_def, TP_def,
+        N_O[0, 0], N_P[0, 0], N_O[0, 1], N_P[1, 0],
+        EV_VO[0, 0], EV_VO[0, 1], EV_VO[1, 0], EV_VO[1, 1],
+        EV_VP[0, 0], EV_VP[0, 1], EV_VP[1, 0], EV_VP[1, 1],
+        params.sigma_H, params.omega_g, params.beta, params.sigma_L, params.y_L,
+        params.rho_a, params.rho_d, params.euler_gamma,
+        params.newton_maxit, params.newton_tol
+    )
+    keys = ["VO", "VP", "dO", "dP", "mu",
+            "EbO_rep", "EtauO_rep", "EtauO_def",
+            "EbP_rep", "EtauP_rep", "EtauP_def",
+            "dP_if_Orep", "EbP_if_Orep", "EtauP_if_Orep",
+            "dP_if_Odef", "EbP_if_Odef", "EtauP_if_Odef",
+            "qO_pol", "qP_pol"]
+    return dict(zip(keys, result))
+
+
+def solve_regime_01(params, grids, uO, TO, uO_def, TO_def, uP_def, TP_def,
+                    EV_VO, EV_VP, N_O):
+    NZ2 = params.NZ * params.NZ
+    NB = grids.bO.size
+    NT_O = grids.tauO.size
+    NT_P = grids.tauP.size
+    result = _solve_regime_01_core(
+        NZ2, NB, NT_O, NT_P,
+        grids.bO, grids.tauO, grids.tauP,
+        grids.iBO0, grids.iBP0,
+        uO, TO, uO_def, TO_def,
+        uP_def, TP_def,
+        N_O[0, 0], N_O[0, 1],
+        EV_VO[0, 0], EV_VO[0, 1], EV_VO[1, 0], EV_VO[1, 1],
+        EV_VP[0, 0], EV_VP[0, 1], EV_VP[1, 0], EV_VP[1, 1],
+        params.sigma_H, params.omega_g, params.beta, params.sigma_L, params.y_L,
+        params.rho_a, params.rho_d, params.euler_gamma, params.lam_reentry,
+        params.newton_maxit, params.newton_tol
+    )
+    keys = ["VO", "VP", "dO", "dP", "mu",
+            "EbO_rep", "EtauO_rep", "EtauO_def", "EtauP_aut"]
+    return dict(zip(keys, result))
+
+
+def solve_regime_10(params, grids, uP, TP, uP_def, TP_def, uO_def, TO_def,
+                    EV_VO, EV_VP, N_P):
+    NZ2 = params.NZ * params.NZ
+    NB = grids.bO.size
+    NT_O = grids.tauO.size
+    NT_P = grids.tauP.size
+    result = _solve_regime_10_core(
+        NZ2, NB, NT_O, NT_P,
+        grids.bP, grids.tauO, grids.tauP,
+        grids.iBO0, grids.iBP0,
+        uP, TP, uP_def, TP_def,
+        uO_def, TO_def,
+        N_P[0, 0], N_P[1, 0],
+        EV_VO[0, 0], EV_VO[0, 1], EV_VO[1, 0], EV_VO[1, 1],
+        EV_VP[0, 0], EV_VP[0, 1], EV_VP[1, 0], EV_VP[1, 1],
+        params.sigma_H, params.omega_g, params.beta, params.sigma_L, params.y_L,
+        params.rho_a, params.rho_d, params.euler_gamma, params.lam_reentry,
+        params.newton_maxit, params.newton_tol
+    )
+    keys = ["VO", "VP", "dO", "dP", "mu",
+            "EbP_rep", "EtauP_rep", "EtauP_def", "EtauO_aut"]
+    return dict(zip(keys, result))
+
+
+def solve_regime_11(params, grids, uO_def, TO_def, uP_def, TP_def,
+                    EV_VO, EV_VP):
+    NZ2 = params.NZ * params.NZ
+    NB = grids.bO.size
+    NT_O = grids.tauO.size
+    NT_P = grids.tauP.size
+    result = _solve_regime_11_core(
+        NZ2, NB, NT_O, NT_P,
+        grids.tauO, grids.tauP, grids.iBO0, grids.iBP0,
+        uO_def, TO_def, uP_def, TP_def,
+        EV_VO[0, 0], EV_VO[0, 1], EV_VO[1, 0], EV_VO[1, 1],
+        EV_VP[0, 0], EV_VP[0, 1], EV_VP[1, 0], EV_VP[1, 1],
+        params.sigma_H, params.omega_g, params.beta, params.y_L, params.sigma_L,
+        params.rho_a, params.euler_gamma, params.lam_reentry
+    )
+    keys = ["VO", "VP", "dO", "dP", "mu", "EtauO_aut", "EtauP_aut"]
+    return dict(zip(keys, result))
+
+
+# ============================================================
+# 11. Main stationary solver loop
+# ============================================================
+
+def solve_stationary_appendixC(params: Params, grids: Grids, Pi2,
+                                uO, TO, uO_def, TO_def,
+                                uP, TP, uP_def, TP_def):
     eq = init_eq(params, grids)
+    NZ2 = params.NZ * params.NZ
+    NB = grids.bO.size
+    shape = (NZ2, NB, NB, 2, 2)
+
+    # JIT warmup: run one iteration with small data to trigger compilation
+    print("JIT compiling numba kernels (first call)...")
+    t0 = time.time()
+
+    EV_VO, EV_VP, N_O, N_P = build_expectations(params, grids, Pi2, eq)
+    _ = solve_regime_00(params, grids, uO, TO, uO_def, TO_def,
+                        uP, TP, uP_def, TP_def, EV_VO, EV_VP, N_O, N_P)
+    _ = solve_regime_01(params, grids, uO, TO, uO_def, TO_def,
+                        uP_def, TP_def, EV_VO, EV_VP, N_O)
+    _ = solve_regime_10(params, grids, uP, TP, uP_def, TP_def,
+                        uO_def, TO_def, EV_VO, EV_VP, N_P)
+    _ = solve_regime_11(params, grids, uO_def, TO_def, uP_def, TP_def,
+                        EV_VO, EV_VP)
+    print(f"JIT compilation done in {time.time()-t0:.1f}s")
 
     for it in range(params.max_iter):
-        # expectations from previous iterate (stationary recursion)
+        t_iter = time.time()
         EV_VO, EV_VP, N_O, N_P = build_expectations(params, grids, Pi2, eq)
 
-        # solve each regime using current expectations
-        out00 = solve_regime_00(params, grids, static, EV_VO, EV_VP, N_O, N_P)
-        out01 = solve_regime_01(params, grids, static, EV_VO, EV_VP, N_O, N_P)
-        out10 = solve_regime_10(params, grids, static, EV_VO, EV_VP, N_O, N_P)
-        out11 = solve_regime_11(params, grids, static, EV_VO, EV_VP)
-
-        # assemble new eq arrays
-        NZ2 = params.NZ * params.NZ
-        NB = grids.bO.size
-        shape = (NZ2, NB, NB, 2, 2)
+        out00 = solve_regime_00(params, grids, uO, TO, uO_def, TO_def,
+                                uP, TP, uP_def, TP_def, EV_VO, EV_VP, N_O, N_P)
+        out01 = solve_regime_01(params, grids, uO, TO, uO_def, TO_def,
+                                uP_def, TP_def, EV_VO, EV_VP, N_O)
+        out10 = solve_regime_10(params, grids, uP, TP, uP_def, TP_def,
+                                uO_def, TO_def, EV_VO, EV_VP, N_P)
+        out11 = solve_regime_11(params, grids, uO_def, TO_def, uP_def, TP_def,
+                                EV_VO, EV_VP)
 
         VO_new = np.zeros(shape)
         VP_new = np.zeros(shape)
@@ -1105,47 +1222,28 @@ def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: Static
         dP_new = np.zeros(shape)
         mu_new = np.zeros(shape)
 
-        # fill each regime
-        VO_new[:, :, :, 0, 0] = out00["VO"]
-        VP_new[:, :, :, 0, 0] = out00["VP"]
-        dO_new[:, :, :, 0, 0] = out00["dO"]
-        dP_new[:, :, :, 0, 0] = out00["dP"]
-        mu_new[:, :, :, 0, 0] = out00["mu"]
+        for (mO, mP, out) in [(0, 0, out00), (0, 1, out01), (1, 0, out10), (1, 1, out11)]:
+            VO_new[:, :, :, mO, mP] = out["VO"]
+            VP_new[:, :, :, mO, mP] = out["VP"]
+            dO_new[:, :, :, mO, mP] = out["dO"]
+            dP_new[:, :, :, mO, mP] = out["dP"]
+            mu_new[:, :, :, mO, mP] = out["mu"]
 
-        VO_new[:, :, :, 0, 1] = out01["VO"]
-        VP_new[:, :, :, 0, 1] = out01["VP"]
-        dO_new[:, :, :, 0, 1] = out01["dO"]
-        dP_new[:, :, :, 0, 1] = out01["dP"]
-        mu_new[:, :, :, 0, 1] = out01["mu"]
-
-        VO_new[:, :, :, 1, 0] = out10["VO"]
-        VP_new[:, :, :, 1, 0] = out10["VP"]
-        dO_new[:, :, :, 1, 0] = out10["dO"]
-        dP_new[:, :, :, 1, 0] = out10["dP"]
-        mu_new[:, :, :, 1, 0] = out10["mu"]
-
-        VO_new[:, :, :, 1, 1] = out11["VO"]
-        VP_new[:, :, :, 1, 1] = out11["VP"]
-        dO_new[:, :, :, 1, 1] = out11["dO"]
-        dP_new[:, :, :, 1, 1] = out11["dP"]
-        mu_new[:, :, :, 1, 1] = out11["mu"]
-
-        # Differences on key objects
         diffV = max(np.max(np.abs(VO_new - eq.VO)), np.max(np.abs(VP_new - eq.VP)))
         diffD = max(np.max(np.abs(dO_new - eq.dO)), np.max(np.abs(dP_new - eq.dP)))
         diffM = np.max(np.abs(mu_new - eq.muL))
         diff = max(diffV, diffD, diffM)
 
-        print(f"iter {it:3d}  diff={diff:.3e}  (V={diffV:.3e}, d={diffD:.3e}, mu={diffM:.3e})")
+        dt = time.time() - t_iter
+        print(f"iter {it:3d}  diff={diff:.3e}  (V={diffV:.3e}, d={diffD:.3e}, mu={diffM:.3e})  [{dt:.2f}s]")
 
-        # damping update
         eq.VO = (1.0 - params.damp) * eq.VO + params.damp * VO_new
         eq.VP = (1.0 - params.damp) * eq.VP + params.damp * VP_new
         eq.dO = (1.0 - params.damp) * eq.dO + params.damp * dO_new
         eq.dP = (1.0 - params.damp) * eq.dP + params.damp * dP_new
         eq.muL = (1.0 - params.damp) * eq.muL + params.damp * mu_new
 
-        # store policies needed for simulation (only fully computed for 00 here)
+        # Store policies for regime (0,0)
         eq.EbO_rep[:, :, :, 0, 0] = out00["EbO_rep"]
         eq.EtauO_rep[:, :, :, 0, 0] = out00["EtauO_rep"]
         eq.EtauO_def[:, :, :, 0, 0] = out00["EtauO_def"]
@@ -1163,8 +1261,14 @@ def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: Static
         eq.qO_pol[:, :, :, 0, 0] = out00["qO_pol"]
         eq.qP_pol[:, :, :, 0, 0] = out00["qP_pol"]
 
-        # for other regimes, keep simple expected tau objects from outputs if you want
-        # (left as extension; the key regime for contagion is (0,0).)
+        # Store policies for other regimes
+        eq.EbO_rep[:, :, :, 0, 1] = out01["EbO_rep"]
+        eq.EtauO_rep[:, :, :, 0, 1] = out01["EtauO_rep"]
+        eq.EtauO_def[:, :, :, 0, 1] = out01["EtauO_def"]
+
+        eq.EbP_rep[:, :, :, 1, 0] = out10["EbP_rep"]
+        eq.EtauP_rep[:, :, :, 1, 0] = out10["EtauP_rep"]
+        eq.EtauP_def[:, :, :, 1, 0] = out10["EtauP_def"]
 
         if diff < params.tol:
             print("Converged.")
@@ -1174,7 +1278,7 @@ def solve_stationary_appendixC(params: Params, grids: Grids, Pi2, static: Static
 
 
 # ============================================================
-# 10. Simulation with discrete default draws, expected repay policies
+# 12. Simulation with discrete default draws, expected repay policies
 # ============================================================
 
 def draw_markov(P, s0, T, rng):
@@ -1183,6 +1287,8 @@ def draw_markov(P, s0, T, rng):
     for t in range(T):
         s[t + 1] = rng.choice(P.shape[0], p=P[s[t], :])
     return s
+
+
 def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
              zO, zP, zO_def, zP_def,
              T=10000, burn=2000, seed=0):
@@ -1191,75 +1297,63 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
     NB = grids.bO.size
     iBO0, iBP0 = grids.iBO0, grids.iBP0
 
-    # simulate z2 index path
     iz0 = NZ2 // 2
     iz_path = draw_markov(Pi2, iz0, T, rng)
 
-    # init states
     iBO = iBO0
     iBP = iBP0
     mO = 0
     mP = 0
 
-    # storage
     DO = np.zeros(T, dtype=int)
     DP = np.zeros(T, dtype=int)
-
     bO = np.zeros(T); bP = np.zeros(T)
     bO_p = np.zeros(T); bP_p = np.zeros(T)
-
     tauO = np.zeros(T); tauP = np.zeros(T)
-
-    # NEW: macro variables
     zO_used = np.zeros(T); zP_used = np.zeros(T)
     lO = np.zeros(T); lP = np.zeros(T)
     yO = np.zeros(T); yP = np.zeros(T)
     cO = np.zeros(T); cP = np.zeros(T)
-    TO_tax = np.zeros(T); TP_tax = np.zeros(T)   # tax revenue T = tau*c
+    TO_tax = np.zeros(T); TP_tax = np.zeros(T)
     gO = np.zeros(T); gP = np.zeros(T)
-
-    # prices (expected/policy-averaged) + lender consumption
     qO = np.zeros(T); qP = np.zeros(T)
     CL = np.zeros(T)
 
     for t in range(T):
         iz2 = int(iz_path[t])
-
         bO[t] = grids.bO[iBO]
         bP[t] = grids.bP[iBP]
 
-        # --- O default draw ---
+        # O default draw
         if mO == 1:
             DO[t] = 1
         else:
-            pO = float(eq.dO[iz2, iBO, iBP, mO, mP])
-            DO[t] = 1 if rng.random() < pO else 0
+            pO_val = float(eq.dO[iz2, iBO, iBP, mO, mP])
+            DO[t] = 1 if rng.random() < pO_val else 0
 
-        # O expected policy conditional on repay
         if DO[t] == 1:
             bO_p[t] = 0.0
-            tauO[t] = float(eq.EtauO_def[iz2, iBO, iBP, 0, 0])
+            tauO[t] = float(eq.EtauO_def[iz2, iBO, iBP, mO, mP])
         else:
-            bO_p[t] = float(eq.EbO_rep[iz2, iBO, iBP, 0, 0])
-            tauO[t] = float(eq.EtauO_rep[iz2, iBO, iBP, 0, 0])
+            bO_p[t] = float(eq.EbO_rep[iz2, iBO, iBP, mO, mP])
+            tauO[t] = float(eq.EtauO_rep[iz2, iBO, iBP, mO, mP])
 
-        # --- P default draw (conditional in (0,0)) ---
+        # P default draw
         if mP == 1:
             DP[t] = 1
         else:
             if (mO, mP) == (0, 0):
                 if DO[t] == 0:
-                    pP = float(eq.dP_if_Orep[iz2, iBO, iBP, 0, 0])
+                    pP_val = float(eq.dP_if_Orep[iz2, iBO, iBP, 0, 0])
                 else:
-                    pP = float(eq.dP_if_Odef[iz2, iBO, iBP, 0, 0])
+                    pP_val = float(eq.dP_if_Odef[iz2, iBO, iBP, 0, 0])
             else:
-                pP = float(eq.dP[iz2, iBO, iBP, mO, mP])
-            DP[t] = 1 if rng.random() < pP else 0
+                pP_val = float(eq.dP[iz2, iBO, iBP, mO, mP])
+            DP[t] = 1 if rng.random() < pP_val else 0
 
-        # P expected policy conditional on repay
         if DP[t] == 1:
             bP_p[t] = 0.0
-            tauP[t] = float(eq.EtauP_def[iz2, iBO, iBP, 0, 0])
+            tauP[t] = float(eq.EtauP_def[iz2, iBO, iBP, mO, mP])
         else:
             if (mO, mP) == (0, 0):
                 if DO[t] == 0:
@@ -1272,34 +1366,25 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
                 bP_p[t] = float(eq.EbP_rep[iz2, iBO, iBP, mO, mP])
                 tauP[t] = float(eq.EtauP_rep[iz2, iBO, iBP, mO, mP])
 
-        # prices used in simulation (expected/policy-averaged in regime (0,0))
         qO[t] = float(eq.qO_pol[iz2, iBO, iBP, 0, 0])
         qP[t] = float(eq.qP_pol[iz2, iBO, iBP, 0, 0])
 
-        # ------------------------------------------------------------
-        # NEW: allocations using GHH block
-        # ------------------------------------------------------------
-        # choose productivity depending on default
+        # Allocations
         zO_used[t] = zO_def[iz2] if DO[t] == 1 else zO[iz2]
         zP_used[t] = zP_def[iz2] if DP[t] == 1 else zP[iz2]
 
-        # labor from intratemporal FOC: l = ( z / (theta*(1+tau)) )^(1/nu)
         lO[t] = (zO_used[t] / (params.theta * (1.0 + tauO[t]))) ** (1.0 / params.nu)
         lP[t] = (zP_used[t] / (params.theta * (1.0 + tauP[t]))) ** (1.0 / params.nu)
 
-        # output
         yO[t] = zO_used[t] * lO[t]
         yP[t] = zP_used[t] * lP[t]
 
-        # private consumption: c = y/(1+tau)
         cO[t] = yO[t] / (1.0 + tauO[t])
         cP[t] = yP[t] / (1.0 + tauP[t])
 
-        # tax revenue: T = tau * c
         TO_tax[t] = tauO[t] * cO[t]
         TP_tax[t] = tauP[t] * cP[t]
 
-        # public goods via gov budget:
         if DO[t] == 0:
             gO[t] = TO_tax[t] + qO[t] * bO_p[t] - bO[t]
         else:
@@ -1310,12 +1395,9 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
         else:
             gP[t] = TP_tax[t]
 
-        # lender consumption accounting (expected-policy version)
         CL[t] = params.y_L + (1 - DO[t]) * bO[t] + (1 - DP[t]) * bP[t] - qO[t] * bO_p[t] - qP[t] * bP_p[t]
 
-        # ------------------------------------------------------------
-        # update market access (discrete)
-        # ------------------------------------------------------------
+        # Market access transition
         if mO == 0 and DO[t] == 1:
             mO_next = 1
         elif mO == 1:
@@ -1330,7 +1412,6 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
         else:
             mP_next = 0
 
-        # snap expected b' to grid for next state index
         iBO = int(np.argmin(np.abs(grids.bO - bO_p[t])))
         iBP = int(np.argmin(np.abs(grids.bP - bP_p[t])))
 
@@ -1353,20 +1434,14 @@ def simulate(params: Params, grids: Grids, Pi2, eq: Eq,
     }
 
 
-
 # ============================================================
-# 11. Event study around O default
+# 13. Event study around O default
 # ============================================================
 
 def event_study_around_defaults(sim, window=10):
-    """
-    Build event-time averages around O default events.
-    window=20 means [-10,...,0,...,+10]
-    """
     DO = sim["DO"]
     T = DO.size
     events = np.where(DO == 1)[0]
-    # exclude events too close to edges
     events = events[(events >= window) & (events < T - window)]
     if events.size == 0:
         return None
@@ -1384,25 +1459,58 @@ def event_study_around_defaults(sim, window=10):
 
 
 # ============================================================
-# 12. Run
+# 14. Run
 # ============================================================
 
 if __name__ == "__main__":
     params = Params()
     grids = make_grids_10()
 
+    print("Building joint productivity process...")
     zO, zP, zO_def, zP_def, Pi2 = build_joint_z(params)
-    static = precompute_static(params, grids, zO, zP, zO_def, zP_def)
 
-    eq = solve_stationary_appendixC(params, grids, Pi2, static)
+    print("Precomputing static household block...")
+    uO, TO, uO_def, TO_def, uP, TP, uP_def, TP_def = \
+        _precompute_static_arrays(zO, zP, zO_def, zP_def,
+                                   grids.tauO, grids.tauP,
+                                   params.theta, params.nu, params.sigma_H, params.omega_g)
 
+    print("Starting stationary solver...")
+    t0 = time.time()
+    eq = solve_stationary_appendixC(params, grids, Pi2,
+                                     uO, TO, uO_def, TO_def,
+                                     uP, TP, uP_def, TP_def)
+    print(f"Solver completed in {time.time()-t0:.1f}s")
+
+    print("\nRunning simulation...")
     sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
                    T=10000, burn=2000, seed=123)
 
+    print("\n=== Simulation Summary ===")
+    print(f"O default rate:  {sim['DO'].mean():.4f}")
+    print(f"P default rate:  {sim['DP'].mean():.4f}")
+    print(f"Mean bO:         {sim['bO'].mean():.4f}")
+    print(f"Mean bP:         {sim['bP'].mean():.4f}")
+    print(f"Mean tauO:       {sim['tauO'].mean():.4f}")
+    print(f"Mean tauP:       {sim['tauP'].mean():.4f}")
+    print(f"Mean yO:         {sim['yO'].mean():.4f}")
+    print(f"Mean yP:         {sim['yP'].mean():.4f}")
+    print(f"Mean cO:         {sim['cO'].mean():.4f}")
+    print(f"Mean cP:         {sim['cP'].mean():.4f}")
+    print(f"Mean gO:         {sim['gO'].mean():.4f}")
+    print(f"Mean gP:         {sim['gP'].mean():.4f}")
+    print(f"Mean qO:         {sim['qO'].mean():.6f}")
+    print(f"Mean qP:         {sim['qP'].mean():.6f}")
+    print(f"Mean CL:         {sim['CL'].mean():.4f}")
+
     ev = event_study_around_defaults(sim, window=10)
     if ev is not None:
-        print("Event study computed with", ev["num_events"], "events.")
-        idx0 = 10  # event time 0 location for window=10
-        print("Avg P default at t=0:", ev["DP"][idx0])
-        print("Avg qP at t=0:", ev["qP"][idx0])
-        print("Avg yP at t=0:", ev["yP"][idx0])
+        print(f"\n=== Event Study (O default, {ev['num_events']} events) ===")
+        idx0 = 10  # event time 0
+        print(f"Avg P default at t=0:  {ev['DP'][idx0]:.4f}")
+        print(f"Avg qP at t=0:         {ev['qP'][idx0]:.6f}")
+        print(f"Avg yP at t=0:         {ev['yP'][idx0]:.4f}")
+        print(f"Avg qO at t=0:         {ev['qO'][idx0]:.6f}")
+        print(f"Avg yO at t=0:         {ev['yO'][idx0]:.4f}")
+    else:
+        print("\nNo O default events found in simulation.")
