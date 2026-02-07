@@ -1459,7 +1459,259 @@ def event_study_around_defaults(sim, window=10):
 
 
 # ============================================================
-# 14. Run
+# 14. Event study plotting
+# ============================================================
+
+def plot_event_study(ev, sim, savepath="event_study_O_default.png"):
+    """
+    Plot trajectories of all macro variables around O default events.
+    Creates a large multi-panel figure with:
+      - Row 1: Default indicators & productivity
+      - Row 2: Output, consumption, labor
+      - Row 3: Tax rate, tax revenue, public goods
+      - Row 4: Debt (current & next), bond prices
+      - Row 5: Lender consumption & credit spreads
+    Each panel shows O (blue) and P (red) where applicable.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
+
+    t = ev["event_time"]
+    n_events = ev["num_events"]
+
+    # Unconditional means for reference lines
+    means = {k: v.mean() for k, v in sim.items() if hasattr(v, 'mean')}
+
+    # Color scheme
+    cO = "#1f77b4"   # blue for O
+    cP = "#d62728"   # red for P
+    cL = "#2ca02c"   # green for lender
+    cG = "#7f7f7f"   # gray for reference
+
+    fig, axes = plt.subplots(6, 3, figsize=(18, 28))
+    fig.suptitle(
+        f"Event Study: Trajectories around Country O Default\n"
+        f"({n_events} events, window = [{t[0]}, {t[-1]}])",
+        fontsize=16, fontweight="bold", y=0.995
+    )
+
+    def _plot_panel(ax, title, ylabel,
+                    series_O=None, series_P=None, series_L=None,
+                    label_O="Country O", label_P="Country P", label_L="Lender",
+                    mean_O=None, mean_P=None, mean_L=None,
+                    shade_default=True, percent=False):
+        """Helper to plot one panel."""
+        if series_O is not None:
+            vals = series_O * 100 if percent else series_O
+            ax.plot(t, vals, color=cO, linewidth=2, label=label_O, marker="o", markersize=3)
+            if mean_O is not None:
+                m = mean_O * 100 if percent else mean_O
+                ax.axhline(m, color=cO, linestyle="--", alpha=0.35, linewidth=1)
+        if series_P is not None:
+            vals = series_P * 100 if percent else series_P
+            ax.plot(t, vals, color=cP, linewidth=2, label=label_P, marker="s", markersize=3)
+            if mean_P is not None:
+                m = mean_P * 100 if percent else mean_P
+                ax.axhline(m, color=cP, linestyle="--", alpha=0.35, linewidth=1)
+        if series_L is not None:
+            vals = series_L * 100 if percent else series_L
+            ax.plot(t, vals, color=cL, linewidth=2, label=label_L, marker="^", markersize=3)
+            if mean_L is not None:
+                m = mean_L * 100 if percent else mean_L
+                ax.axhline(m, color=cL, linestyle="--", alpha=0.35, linewidth=1)
+        ax.axvline(0, color="black", linestyle="-", linewidth=1.5, alpha=0.7)
+        if shade_default:
+            ax.axvspan(-0.5, 0.5, color="orange", alpha=0.12)
+        ax.set_title(title, fontsize=12, fontweight="bold")
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_xlabel("Event time (0 = O default)", fontsize=9)
+        ax.legend(fontsize=9, loc="best")
+        ax.grid(True, alpha=0.3)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+
+    # ================================================================
+    # Row 0: Default probabilities & productivity
+    # ================================================================
+    _plot_panel(axes[0, 0], "Default Indicator (avg)", "Probability",
+                series_O=ev["DO"], series_P=ev["DP"],
+                mean_O=means.get("DO"), mean_P=means.get("DP"))
+
+    _plot_panel(axes[0, 1], "Productivity z (effective)", "z",
+                series_O=ev["zO"], series_P=ev["zP"],
+                mean_O=means.get("zO"), mean_P=means.get("zP"))
+
+    # Spread = 1/q - 1 (annualized for one-period bond)
+    spread_O = 1.0 / np.maximum(ev["qO"], 1e-6) - 1.0
+    spread_P = 1.0 / np.maximum(ev["qP"], 1e-6) - 1.0
+    mean_spread_O = 1.0 / max(means.get("qO", 1.0), 1e-6) - 1.0
+    mean_spread_P = 1.0 / max(means.get("qP", 1.0), 1e-6) - 1.0
+    _plot_panel(axes[0, 2], "Credit Spread (1/q - 1)", "Spread",
+                series_O=spread_O, series_P=spread_P,
+                mean_O=mean_spread_O, mean_P=mean_spread_P,
+                percent=True)
+    axes[0, 2].set_ylabel("Spread (%)")
+
+    # ================================================================
+    # Row 1: Output, Consumption, Labor
+    # ================================================================
+    _plot_panel(axes[1, 0], "Output y = z * l", "y",
+                series_O=ev["yO"], series_P=ev["yP"],
+                mean_O=means.get("yO"), mean_P=means.get("yP"))
+
+    _plot_panel(axes[1, 1], "Private Consumption c", "c",
+                series_O=ev["cO"], series_P=ev["cP"],
+                mean_O=means.get("cO"), mean_P=means.get("cP"))
+
+    _plot_panel(axes[1, 2], "Labor l", "l",
+                series_O=ev["lO"], series_P=ev["lP"],
+                mean_O=means.get("lO"), mean_P=means.get("lP"))
+
+    # ================================================================
+    # Row 2: Tax rate, Tax revenue, Public goods
+    # ================================================================
+    _plot_panel(axes[2, 0], "Tax Rate tau", "tau",
+                series_O=ev["tauO"], series_P=ev["tauP"],
+                mean_O=means.get("tauO"), mean_P=means.get("tauP"))
+
+    _plot_panel(axes[2, 1], "Tax Revenue T = tau * c", "T",
+                series_O=ev["TO_tax"], series_P=ev["TP_tax"],
+                mean_O=means.get("TO_tax"), mean_P=means.get("TP_tax"))
+
+    _plot_panel(axes[2, 2], "Public Goods g", "g",
+                series_O=ev["gO"], series_P=ev["gP"],
+                mean_O=means.get("gO"), mean_P=means.get("gP"))
+
+    # ================================================================
+    # Row 3: Debt (current obligation), Next-period debt, Bond prices
+    # ================================================================
+    _plot_panel(axes[3, 0], "Current Debt b (due today)", "b",
+                series_O=ev["bO"], series_P=ev["bP"],
+                mean_O=means.get("bO"), mean_P=means.get("bP"))
+
+    _plot_panel(axes[3, 1], "Next-Period Debt b'", "b'",
+                series_O=ev["bO_p"], series_P=ev["bP_p"],
+                mean_O=means.get("bO_p"), mean_P=means.get("bP_p"))
+
+    _plot_panel(axes[3, 2], "Bond Price q", "q",
+                series_O=ev["qO"], series_P=ev["qP"],
+                mean_O=means.get("qO"), mean_P=means.get("qP"))
+
+    # ================================================================
+    # Row 4: Net resource transfer, Debt-to-output, Lender
+    # ================================================================
+    # Net transfer from lender: q*b' - (1-d)*b  (positive = borrowing)
+    net_O = ev["qO"] * ev["bO_p"] - (1.0 - ev["DO"]) * ev["bO"]
+    net_P = ev["qP"] * ev["bP_p"] - (1.0 - ev["DP"]) * ev["bP"]
+    mn_O = means.get("qO", 0) * means.get("bO_p", 0) - (1.0 - means.get("DO", 0)) * means.get("bO", 0)
+    mn_P = means.get("qP", 0) * means.get("bP_p", 0) - (1.0 - means.get("DP", 0)) * means.get("bP", 0)
+    _plot_panel(axes[4, 0], "Net Borrowing (q*b' - (1-d)*b)", "Net flow",
+                series_O=net_O, series_P=net_P,
+                mean_O=mn_O, mean_P=mn_P)
+
+    # Debt-to-output ratio
+    dty_O = ev["bO"] / np.maximum(ev["yO"], 1e-6)
+    dty_P = ev["bP"] / np.maximum(ev["yP"], 1e-6)
+    mdty_O = means.get("bO", 0) / max(means.get("yO", 1), 1e-6)
+    mdty_P = means.get("bP", 0) / max(means.get("yP", 1), 1e-6)
+    _plot_panel(axes[4, 1], "Debt-to-Output Ratio b/y", "b/y",
+                series_O=dty_O, series_P=dty_P,
+                mean_O=mdty_O, mean_P=mdty_P,
+                percent=True)
+    axes[4, 1].set_ylabel("b/y (%)")
+
+    _plot_panel(axes[4, 2], "Lender Consumption C_L", "C_L",
+                series_L=ev["CL"], mean_L=means.get("CL"),
+                label_L="Lender $C_L$")
+
+    # ================================================================
+    # Row 5: Combined view & summary table
+    # ================================================================
+    # Panel: O vs P output gap relative to unconditional mean
+    yO_dev = (ev["yO"] / means.get("yO", 1) - 1.0) * 100
+    yP_dev = (ev["yP"] / means.get("yP", 1) - 1.0) * 100
+    _plot_panel(axes[5, 0], "Output Deviation from Mean (%)", "% deviation",
+                series_O=yO_dev, series_P=yP_dev,
+                label_O="O output", label_P="P output")
+    axes[5, 0].axhline(0, color=cG, linestyle="-", linewidth=1, alpha=0.5)
+
+    # Panel: consumption deviation
+    cO_dev = (ev["cO"] / means.get("cO", 1) - 1.0) * 100
+    cP_dev = (ev["cP"] / means.get("cP", 1) - 1.0) * 100
+    _plot_panel(axes[5, 1], "Consumption Deviation from Mean (%)", "% deviation",
+                series_O=cO_dev, series_P=cP_dev,
+                label_O="O consumption", label_P="P consumption")
+    axes[5, 1].axhline(0, color=cG, linestyle="-", linewidth=1, alpha=0.5)
+
+    # Panel: CL deviation
+    CL_dev = (ev["CL"] / means.get("CL", 1) - 1.0) * 100
+    _plot_panel(axes[5, 2], "Lender Consumption Deviation (%)", "% deviation",
+                series_L=CL_dev, label_L="$C_L$ deviation")
+    axes[5, 2].axhline(0, color=cG, linestyle="-", linewidth=1, alpha=0.5)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
+    plt.savefig(savepath, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Event study figure saved to: {savepath}")
+
+
+def print_event_table(ev, sim):
+    """Print a detailed table of event-time values at key dates."""
+    t = ev["event_time"]
+    idx_m5 = np.argmin(np.abs(t - (-5)))
+    idx_m1 = np.argmin(np.abs(t - (-1)))
+    idx_0  = np.argmin(np.abs(t - 0))
+    idx_p1 = np.argmin(np.abs(t - 1))
+    idx_p5 = np.argmin(np.abs(t - 5))
+    cols = [idx_m5, idx_m1, idx_0, idx_p1, idx_p5]
+    col_names = ["t=-5", "t=-1", "t=0", "t=+1", "t=+5"]
+
+    means = {k: v.mean() for k, v in sim.items() if hasattr(v, 'mean')}
+
+    rows = [
+        ("DO  (O default)",   "DO",     "{:.4f}"),
+        ("DP  (P default)",   "DP",     "{:.4f}"),
+        ("zO  (O prod)",      "zO",     "{:.4f}"),
+        ("zP  (P prod)",      "zP",     "{:.4f}"),
+        ("yO  (O output)",    "yO",     "{:.4f}"),
+        ("yP  (P output)",    "yP",     "{:.4f}"),
+        ("cO  (O consump)",   "cO",     "{:.4f}"),
+        ("cP  (P consump)",   "cP",     "{:.4f}"),
+        ("lO  (O labor)",     "lO",     "{:.4f}"),
+        ("lP  (P labor)",     "lP",     "{:.4f}"),
+        ("tauO (O tax rate)", "tauO",   "{:.4f}"),
+        ("tauP (P tax rate)", "tauP",   "{:.4f}"),
+        ("TO  (O tax rev)",   "TO_tax", "{:.4f}"),
+        ("TP  (P tax rev)",   "TP_tax", "{:.4f}"),
+        ("gO  (O pub goods)", "gO",     "{:.4f}"),
+        ("gP  (P pub goods)", "gP",     "{:.4f}"),
+        ("bO  (O debt)",      "bO",     "{:.4f}"),
+        ("bP  (P debt)",      "bP",     "{:.4f}"),
+        ("bO' (O next debt)", "bO_p",   "{:.4f}"),
+        ("bP' (P next debt)", "bP_p",   "{:.4f}"),
+        ("qO  (O bond px)",   "qO",     "{:.6f}"),
+        ("qP  (P bond px)",   "qP",     "{:.6f}"),
+        ("CL  (lender C)",    "CL",     "{:.4f}"),
+    ]
+
+    header = f"{'Variable':<22}" + "".join(f"{c:>10}" for c in col_names) + f"{'Uncond':>10}"
+    print("\n" + "=" * len(header))
+    print(f"Event Study Table ({ev['num_events']} O-default events)")
+    print("=" * len(header))
+    print(header)
+    print("-" * len(header))
+    for label, key, fmt in rows:
+        if key not in ev:
+            continue
+        vals = "".join(fmt.format(ev[key][c]).rjust(10) for c in cols)
+        unc = fmt.format(means.get(key, 0.0)).rjust(10)
+        print(f"{label:<22}{vals}{unc}")
+    print("=" * len(header))
+
+
+# ============================================================
+# 15. Run
 # ============================================================
 
 if __name__ == "__main__":
@@ -1506,11 +1758,17 @@ if __name__ == "__main__":
     ev = event_study_around_defaults(sim, window=10)
     if ev is not None:
         print(f"\n=== Event Study (O default, {ev['num_events']} events) ===")
-        idx0 = 10  # event time 0
+        idx0 = 10
         print(f"Avg P default at t=0:  {ev['DP'][idx0]:.4f}")
         print(f"Avg qP at t=0:         {ev['qP'][idx0]:.6f}")
         print(f"Avg yP at t=0:         {ev['yP'][idx0]:.4f}")
         print(f"Avg qO at t=0:         {ev['qO'][idx0]:.6f}")
         print(f"Avg yO at t=0:         {ev['yO'][idx0]:.4f}")
+
+        # Detailed table
+        print_event_table(ev, sim)
+
+        # Multi-panel figure
+        plot_event_study(ev, sim, savepath="event_study_O_default.png")
     else:
         print("\nNo O default events found in simulation.")
