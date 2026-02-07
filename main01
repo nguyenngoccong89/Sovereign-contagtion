@@ -1,4 +1,5 @@
 import numpy as np
+import math
 from dataclasses import dataclass
 
 # ============================================================
@@ -75,7 +76,7 @@ def make_grids_10():
 # ============================================================
 
 def _norm_cdf(x):
-    return 0.5 * (1.0 + np.math.erf(x / np.sqrt(2.0)))
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 def tauchen_logz(N, rho, sigma_eps, m):
     sigma_z = sigma_eps / np.sqrt(1 - rho**2)
@@ -1395,15 +1396,13 @@ if __name__ == "__main__":
 
     eq = solve_stationary_appendixC(params, grids, Pi2, static)
 
-sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
-               T=10000, burn=2000, seed=123)
+    sim = simulate(params, grids, Pi2, eq, zO, zP, zO_def, zP_def,
+                   T=10000, burn=2000, seed=123)
 
-ev = event_study_around_defaults(sim, window=10)
-if ev is not None:
-    print("Event study computed with", ev["num_events"], "events.")
-    idx0 = 10  # event time 0 location for window=10
-    print("Avg P default at t=0:", ev["DP"][idx0])
-    print("Avg qP at t=0:", ev["qP"][idx0])
-    print("Avg yP at t=0:", ev["yP"][idx0])
-
-   
+    ev = event_study_around_defaults(sim, window=10)
+    if ev is not None:
+        print("Event study computed with", ev["num_events"], "events.")
+        idx0 = 10  # event time 0 location for window=10
+        print("Avg P default at t=0:", ev["DP"][idx0])
+        print("Avg qP at t=0:", ev["qP"][idx0])
+        print("Avg yP at t=0:", ev["yP"][idx0])
