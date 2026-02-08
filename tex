@@ -1,0 +1,707 @@
+\documentclass[11pt]{article}
+
+% ============================================================
+% Overleaf-friendly, clean typography + bigger front page
+% ============================================================
+
+% --- Fonts / encoding (safe defaults on Overleaf) ---
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+
+% --- Page layout / spacing ---
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\setstretch{1.08}
+
+% --- Math ---
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+
+% --- Tables / floats ---
+\usepackage{booktabs}
+\usepackage{tabularx}   % robust wide tables
+\usepackage{array}
+\usepackage{float}
+\usepackage{caption}
+\captionsetup{
+  font=small,
+  labelfont=bf,
+  labelsep=period
+}
+
+% --- Algorithms ---
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\algrenewcommand\algorithmicrequire{\textbf{Inputs:}}
+\algrenewcommand\algorithmicensure{\textbf{Outputs:}}
+
+% --- Lists ---
+\usepackage{enumitem}
+\setlist[itemize]{topsep=4pt, itemsep=2pt}
+\setlist[enumerate]{topsep=4pt, itemsep=2pt}
+
+% --- Links ---
+\usepackage[hidelinks]{hyperref}
+
+% --- Section styling (cleaner) ---
+\usepackage{titlesec}
+\titleformat{\section}{\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{10pt}{6pt}
+\titlespacing*{\subsection}{0pt}{8pt}{4pt}
+
+% --- Handy macros ---
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+
+% ============================================================
+% Title (used for PDF metadata; we print a custom title page)
+% ============================================================
+\title{Appendix C: Consistent Solution Algorithm and Simulation (Python-Oriented)}
+\author{}
+\date{}
+
+\begin{document}
+
+% ============================================================
+% Big front page
+% ============================================================
+\begin{titlepage}
+  \centering
+  \vspace*{1.5cm}
+
+  {\Huge\bfseries Appendix C\par}
+  \vspace{0.55cm}
+  {\LARGE\bfseries Consistent Solution Algorithm and Simulation\par}
+  \vspace{0.25cm}
+  {\Large (Python-Oriented)\par}
+  \vspace{0.95cm}
+  {\large De Ferra--Mallucci / Hatchondo Backward Iteration\par}
+  \vspace{0.85cm}
+
+  {\normalsize
+  Two-Country Stackelberg Sovereign Default with One-Period Debt,\\
+  GHH Preferences, Public Goods, Consumption Taxes, and EV Smoothing\par}
+
+ 
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+% ============================================================
+% CONTENT (your original text, kept intact; only table formatting improved)
+% ============================================================
+
+\section{Functional Forms and Baseline Calibration}
+
+Table \ref{tab:calibration_functional} matches the primitives used throughout.
+
+\begin{table}[H]
+    \centering
+    \caption{Functional Forms and Baseline Calibration}
+    \label{tab:calibration_functional}
+    \renewcommand{\arraystretch}{1.25}
+    \setlength{\tabcolsep}{6pt}
+    \begin{tabularx}{\textwidth}{@{}l X c c@{}}
+        \toprule
+        \textbf{Component} & \textbf{Functional Form} & \textbf{Param.} & \textbf{Value} \\
+        \midrule
+        \multicolumn{4}{@{}l}{\textit{A. Household Preferences (GHH) and Public Goods}} \\
+        Private utility (GHH) &
+        $u(c,l)=\dfrac{\left(c-\theta \dfrac{l^{1+\nu}}{1+\nu}\right)^{1-\sigma_H}}{1-\sigma_H}$ &
+        $\sigma_H$ & 2.0 \\
+        & & $\theta$ & 1.0 \\
+        & & $\nu$ & 2.0 \\
+        Public-good utility &
+        $v(g)=\omega_g \dfrac{g^{1-\sigma_H}}{1-\sigma_H}$ &
+        $\omega_g$ & 0.70 \\
+        Sovereign discounting & $\beta\in(0,1)$ & $\beta$ & 0.95 \\
+        \midrule
+        \multicolumn{4}{@{}l}{\textit{B. Technology and Shocks}} \\
+        Production & $y_t = z_t l_t$ & -- & -- \\
+        Productivity process &
+        $\ln z' = \rho \ln z + \varepsilon', \ \varepsilon'\sim\mathcal{N}(0,\sigma_\varepsilon^2)$ &
+        $\rho$ & 0.90 \\
+        & & $\sigma_\varepsilon$ & 0.025 \\
+        Discretization (Tauchen) &
+        $z\in\mathcal{Z},\ |\mathcal{Z}|=N_Z,\ \text{width}=m$ &
+        $N_Z$ & 7 \\
+        & & $m$ & 3.0 \\
+        \midrule
+        \multicolumn{4}{@{}l}{\textit{C. Default / Output Penalty (Autarky Productivity)}} \\
+        Default output penalty (cap) &
+        $z^{\text{def}}=\min\{z,\delta\,\bar z\},\ \bar z=\sum_{z\in\mathcal{Z}}\pi(z)\,z$ &
+        $\delta$ & 0.90 \\
+        \midrule
+        \multicolumn{4}{@{}l}{\textit{D. Market Access}} \\
+        Re-entry probability &
+        $\Pr(m'=0\mid m=1)=\lambda$ &
+        $\lambda$ & 0.20 \\
+        \midrule
+        \multicolumn{4}{@{}l}{\textit{E. International Lender}} \\
+        Lender marginal utility (CRRA) &
+        $U_L'(C_L)=C_L^{-\sigma_L}$ &
+        $\sigma_L$ & 2.5 \\
+        Lender discounting &
+        $\beta_L\in(0,1)$ &
+        $\beta_L$ & 0.98 \\
+        Lender endowment &
+        $y_L\ \text{constant}$ &
+        $y_L$ & 0.80 \\
+        \bottomrule
+    \end{tabularx}
+\end{table}
+
+\section{State, Timing, and Constraints}
+
+\subsection{Countries and market access}
+Two countries \(i\in\{O,P\}\) (Outskirt/Periphery). Each has market access indicator
+\[
+m_i \in \{0,1\},\qquad m_i=0 \ \text{(in market)},\quad m_i=1 \ \text{(excluded/autarky)}.
+\]
+
+\subsection{State space}
+\[
+s_t=(z_{O,t},z_{P,t},b_{O,t},b_{P,t},m_{O,t},m_{P,t}),
+\]
+where \(b_{i,t}\ge 0\) is one-period debt \emph{due in period \(t\)}.
+
+\subsection{Within-period timing (Stackelberg)}
+Conditional on market access, within period \(t\):
+\begin{enumerate}
+\item Nature draws \((z_{O,t},z_{P,t})\) and readmission shocks for any excluded country (\(m_{i,t}=1\)).
+\item If \(m_{O,t}=0\): Outskirt (leader) chooses \(d_{O,t}\in\{0,1\}\). If \(d_{O,t}=0\), chooses \((b'_{O,t},\tau_{O,t})\).
+\item If \(m_{P,t}=0\): Periphery (follower) observes Outskirt's move and chooses \(d_{P,t}\in\{0,1\}\). If \(d_{P,t}=0\), chooses \((b'_{P,t},\tau_{P,t})\).
+\item Settlement and pricing: \((c,l,y,T,g)\) and lender consumption \(C_{L,t}\) realize, pinning down \(\mu_{L,t}\) and debt prices.
+\end{enumerate}
+
+\subsection{Transitions}
+Productivity is a Markov chain \((z'_O,z'_P)\sim \Pi(\cdot|z_O,z_P)\). Market access:
+\[
+m'_{i}=\begin{cases}
+1, & m_i=0,\ d_i=1,\\
+0 \text{ w.p. }\lambda,\ \ 1 \text{ w.p. }(1-\lambda), & m_i=1,\\
+0, & m_i=0,\ d_i=0.
+\end{cases}
+\qquad
+b'_{i}=\begin{cases}
+0, & m_i=1 \text{ or } d_i=1,\\
+\text{chosen from grid}, & m_i=0,\ d_i=0.
+\end{cases}
+\]
+
+\section{Static household block with consumption taxes (precompute)}
+
+With linear production \(y=z\,l\) and consumption tax wedge \((1+\tau)c=y\), GHH intratemporal FOC implies:
+\[
+\theta l^\nu=\frac{z}{1+\tau}
+\ \Rightarrow\
+l(z,\tau)=\left(\frac{z}{\theta(1+\tau)}\right)^{1/\nu}.
+\]
+Thus:
+\[
+y(z,\tau)=z\,l(z,\tau),\quad
+c(z,\tau)=\frac{y(z,\tau)}{1+\tau},\quad
+T(z,\tau)=\tau c(z,\tau).
+\]
+
+Default productivity cap:
+\[
+z^{\text{def}}=\min\{z,\delta\bar z\},\qquad \bar z=\sum_{z\in\mathcal{Z}}\pi(z)\,z.
+\]
+Compute the same objects under \(z^{\text{def}}\).
+
+Private utility:
+\[
+u(z,\tau)=\frac{\left(c(z,\tau)-\theta \frac{l(z,\tau)^{1+\nu}}{1+\nu}\right)^{1-\sigma_H}}{1-\sigma_H}.
+\]
+
+\paragraph{Precomputation (Python note).}
+In code, store arrays for each country (and default cap) as \texttt{np.ndarray} with shape
+\[
+[N_Z,\ N_{\tau i}] \quad \text{(fast lookup by indices)}.
+\]
+You will reuse these objects inside value-index evaluation for \emph{every} \((b',\tau)\) candidate, so precompute once.
+
+\section{Government budget, public good, and per-period payoff}
+
+\subsection{Repayment (market access \(m_i=0\), choose \(d_i=0\))}
+Public good:
+\[
+g_i = T_i(z_i,\tau_i)+ q_i(\cdot)\, b'_i - b_i.
+\]
+Per-period payoff:
+\[
+U_i^{\text{rep}}(s;b'_i,\tau_i)=u_i(z_i,\tau_i) + \omega_g\frac{g_i^{1-\sigma_H}}{1-\sigma_H}.
+\]
+
+\subsection{Default or exclusion (\(d_i=1\) or \(m_i=1\))}
+No issuance: \(b'_i=0\). Use \(z_i^{\text{def}}\). Public good:
+\[
+g_i^{\text{def}}=T_i(z_i^{\text{def}},\tau_i),\qquad
+U_i^{\text{def}}(s;\tau_i)=u_i(z_i^{\text{def}},\tau_i)+\omega_g\frac{(g_i^{\text{def}})^{1-\sigma_H}}{1-\sigma_H}.
+\]
+
+\subsection{Feasibility}
+If \(g\le 0\) or the GHH inside term is nonpositive, assign value index \(-10^{12}\) (not NaN) to keep logit stable.
+
+\section{EV smoothing: joint \((b',\tau)\) and default}
+
+Let action set under repayment:
+\[
+a_i=(b'_i,\tau_i)\in\mathcal{A}_i\equiv \mathcal{B}_i\times\mathcal{T}_i,
+\qquad N_{a_i}=|\mathcal{B}_i||\mathcal{T}_i|.
+\]
+
+Let \(\gamma_E\simeq 0.5772\) be Euler's constant. For a set \(\{x_j\}\):
+\[
+\mathcal{L}_\rho(\{x_j\})=\rho\gamma_E + \rho\log\left(\sum_j e^{x_j/\rho}\right).
+\]
+
+Repayment inclusive value:
+\[
+\widetilde V_i^{\text{rep}}(s)=\mathcal{L}_{\rho_a}\left(\{W_i^{\text{rep}}(s;a_i)\}_{a_i\in\mathcal{A}_i}\right),
+\quad
+\pi_i(a_i|s,\text{rep})=
+\frac{e^{W_i^{\text{rep}}(s;a_i)/\rho_a}}{\sum_{\hat a_i}e^{W_i^{\text{rep}}(s;\hat a_i)/\rho_a}}.
+\]
+
+Default/autarky inclusive value (EV over \(\tau\) only):
+\[
+\widetilde V_i^{\text{def}}(s)=\mathcal{L}_{\rho_a}\left(\{W_i^{\text{def}}(s;\tau_i)\}_{\tau_i\in\mathcal{T}_i}\right),
+\quad
+\pi_i(\tau_i|s,\text{def})=
+\frac{e^{W_i^{\text{def}}(s;\tau_i)/\rho_a}}{\sum_{\hat\tau_i}e^{W_i^{\text{def}}(s;\hat\tau_i)/\rho_a}}.
+\]
+
+Default logit:
+\[
+d_i(s)=
+\frac{\exp(\widetilde V_i^{\text{def}}(s)/\rho_d)}
+{\exp(\widetilde V_i^{\text{def}}(s)/\rho_d)+\exp(\widetilde V_i^{\text{rep}}(s)/\rho_d)}.
+\]
+Inclusive value:
+\[
+V_i(s)=\mathcal{L}_{\rho_d}\left(\{\widetilde V_i^{\text{def}}(s),\widetilde V_i^{\text{rep}}(s)\}\right).
+\]
+
+\paragraph{Python stability tip.}
+Implement log-sum-exp with max subtraction:
+\[
+m=\max_j x_j,\qquad \log\sum_j e^{x_j/\rho} = \frac{m}{\rho}+\log\sum_j e^{(x_j-m)/\rho}.
+\]
+
+\section{International lender and one-period bond pricing}
+
+Lender marginal utility and SDF:
+\[
+\mu_{L,t}=C_{L,t}^{-\sigma_L},\qquad
+M_{t+1}=\beta_L\frac{\mu_{L,t+1}}{\mu_{L,t}}.
+\]
+
+Lender consumption (one-period debt):
+\[
+C_{L,t}=y_L+(1-d_{O,t})b_{O,t}+(1-d_{P,t})b_{P,t}-q_{O,t}b'_{O,t}-q_{P,t}b'_{P,t},
+\]
+with the obvious modifications if a country is excluded or defaults today (set repayment and issuance to 0).
+
+Price equation (Cuadra-style dependence through continuation default incentives):
+\[
+q_{i,t}(s,\cdot)=\frac{\beta_L\ \E_t\!\left[\mu_{L,t+1}(s')\,(1-d_{i,t+1}(s'))\right]}{\mu_{L,t}(s,\cdot)}.
+\]
+Define numerators (known from \(t+1\)):
+\[
+N_{i,t}(s,\cdot)\equiv \beta_L\, \E_t\!\left[\mu_{L,t+1}(s')\,(1-d_{i,t+1}(s'))\right].
+\]
+Then \(q_{i,t}=N_{i,t}/\mu_{L,t}\). But \(\mu_{L,t}\) depends on \(q_{O,t},q_{P,t}\) through \(C_{L,t}\), so you solve a \emph{within-state} fixed point in \(\mu_{L,t}\).
+
+\subsection{Inner denominator fixed point (Python-friendly)}
+For a given state/case with issuances \((b'_O,b'_P)\) (or only one issuer), the mapping is:
+\[
+\mu \mapsto \left(y_L+\text{repayments}-\frac{N_O b'_O+N_P b'_P}{\mu}\right)^{-\sigma_L}.
+\]
+This is a 1D fixed point in \(\mu\) for each \((s,\text{case})\), and can be solved robustly by:
+\begin{itemize}
+\item fixed-point iteration with damping,
+\end{itemize}
+
+\section{Finite-horizon backward iteration (Appendix-C structure, expanded for coding)}
+
+\subsection{How to interpret ``finite-horizon backward iteration'' in stationary Python code}
+Appendix C (de Ferra--Mallucci) uses the \emph{Hatchondo backward-iteration/time-iteration trick}:
+\begin{itemize}
+\item Treat objects from ``next period'' \(t+1\) (value functions, default probabilities, lender MU) as given.
+\item Solve the current-period game (Stackelberg + pricing fixed point) to produce updated objects for period \(t\).
+\item Because the model is stationary, you then \emph{replace} the ``next-period'' objects with the newly computed ones (with damping) and repeat until convergence.
+\end{itemize}
+In other words, you implement a stationary fixed point, but the computational ordering mimics a backward step.
+
+\subsection{Appendix-C step map (Ferra steps 1--11) to this model}
+Appendix C lists steps (paraphrased) 1--11. In your model these become:
+
+\begin{enumerate}
+\item Discretize \((z_O,z_P)\) and build joint transition matrix \(\Pi\).
+\item Given \((V_{t+1}, d_{t+1}, \mu_{L,t+1})\), build all needed expectations and pricing numerators \(N_{i}\).
+\item Solve follower (Periphery) \emph{for every possible leader repay action} \(a_O=(b'_O,\tau_O)\) and for each leader default decision \(d_O\), using the four cases.
+\item Solve leader (Outskirt) anticipating the follower responses, also case-by-case.
+\item Plug leader equilibrium mixed strategy into follower conditional objects to obtain follower equilibrium objects.
+\item Construct Periphery default probabilities consistent with leader market-access/default branches (the ``plug-in'' logic).
+\item Construct Outskirt default probabilities from its repay-vs-default inclusive values.
+\item Update Outskirt equilibrium default and repay policies (damped).
+\item Plug updated Outskirt default into Periphery default to obtain Periphery equilibrium default.
+\item Compute lenders' consumption and \(\mu_L\), and update policy-level prices \(q_O,q_P\) (damped).
+\item Repeat steps 2--10 until convergence of \((V,d,q,\mu_L)\).
+\end{enumerate}
+
+\subsection{Core arrays you will actually store in Python}
+Let:
+\[
+N_z=N_Z^2,\quad N_{bO}=|\mathcal{B}_O|,\quad N_{bP}=|\mathcal{B}_P|,\quad
+N_{aO}=N_{bO}N_{\tau O},\quad N_{aP}=N_{bP}N_{\tau P}.
+\]
+Typical ``stationary'' arrays (for all regimes \((m_O,m_P)\)):
+
+\begin{itemize}
+\item Values: \texttt{VO[Nz,NbO,NbP,2,2]}, \texttt{VP[Nz,NbO,NbP,2,2]}.
+\item Default probs: \texttt{dO[...]}, \texttt{dP[...]}.
+\item Lender MU: \texttt{muL[...]}. (Or store \texttt{CL} then compute MU.)
+\item Repay mixed strategies (conditional on repay): \texttt{piO\_rep[Nz,NbO,NbP,NaO]} and \texttt{piP\_rep\_eq[Nz,NbO,NbP,NaP]}.
+\item Expected policies (for simulation): \texttt{bO\_prime\_exp\_rep[Nz,NbO,NbP]}, \texttt{tauO\_exp\_rep[...]}, etc; plus default-branch expected taxes.
+\item Policy-level prices (for simulation and sometimes for utility evaluation): \texttt{qO\_exp[...]}, \texttt{qP\_exp[...]}.
+\end{itemize}
+
+\paragraph{Key Appendix-C complication: follower conditional objects.}
+To solve leader actions you need Periphery objects conditional on each leader action \(a_O\).
+Naively storing \texttt{piP\_rep\_cond[Nz,NbO,NbP,NaO,NaP]} is huge.
+A practical coding compromise is:
+
+\begin{itemize}
+\item store Periphery conditional inclusive values and default probs:
+\[
+\texttt{VP\_rep\_incl\_cond[Nz,NbO,NbP,NaO]},\quad
+\texttt{VP\_def\_incl\_cond[...]},\quad
+\texttt{dP\_cond[...]}.
+\]
+\item store Periphery conditional \emph{expected issuances and taxes} (sufficient for prices and leader evaluation):
+\[
+\texttt{bP\_prime\_exp\_rep\_cond[Nz,NbO,NbP,NaO]},\quad
+\texttt{tauP\_exp\_rep\_cond[...]}.
+\]
+\end{itemize}
+
+This preserves Appendix-C logic but avoids a 5D probability tensor.
+
+\subsection{Detailed stationary time-iteration loop (expanded, code-oriented)}
+
+\paragraph{High-level ordering.}
+Each iteration does:
+\[
+(V^{old},d^{old},\mu_L^{old},q^{old})
+\ \Longrightarrow\
+\text{construct expectations and numerators}
+\ \Longrightarrow\
+\text{solve P conditional}
+\ \Longrightarrow\
+\text{solve O}
+\ \Longrightarrow\
+\text{plug-in equilibrium}
+\ \Longrightarrow\
+\text{update }(V,d,\mu_L,q).
+\]
+
+\begin{algorithm}[H]
+\caption{Stationary Appendix-C iteration (Python-oriented) for one-period debt with \((b',\tau)\)}
+\begin{algorithmic}[1]
+\State \textbf{Inputs:} grids for \(\mathcal{Z}\) and \(\Pi\); \(\mathcal{B}_i,\mathcal{T}_i\); parameters; EV scales \(\rho_a,\rho_d\); damping \(\xi\in(0,1]\).
+\State \textbf{Precompute:} household block arrays for each \((z,\tau)\) and under \(z^{def}\).
+\State \textbf{Initialize:} arrays \(\texttt{VO,VP,dO,dP,muL,qO\_exp,qP\_exp}\) (e.g.\ autarky values, risk-free prices, constant MU).
+\For{iteration \(k=1,2,\dots\) until convergence}
+    \State \textbf{(Step 2) Construct expectations and pricing numerators using old next-period objects.}
+    \State Build arrays of expected continuation values for any needed \((b'_O,b'_P,m'_O,m'_P)\):
+    \[
+      \texttt{EV\_O} = \Pi \cdot \texttt{VO\_old},\quad
+      \texttt{EV\_P} = \Pi \cdot \texttt{VP\_old},
+    \]
+    with reshape--multiply--reshape (vectorize over \(z\)).
+    \State Build pricing numerators for each issuer \(i\):
+    \[
+      N_i(s,\cdot)=\beta_L\,\E[\mu_{L,old}(s')\,(1-d_{i,old}(s'))\mid s,\cdot],
+    \]
+    where the expectation integrates over \(z'\) and \(m'\) transitions implied by \((m,d)\).
+    \State (In code: precompute \texttt{N\_O} and \texttt{N\_P} for each regime and next-debt index.)
+
+    \State \textbf{(Step 3) Solve Periphery conditional on leader decisions (Appendix C follower step).}
+    \For{each regime \((m_O,m_P)\)}
+        \If{\(m_P=1\)} \Comment{Periphery excluded: no issuance, EV over \(\tau_P\) only}
+            \State Compute \(\widetilde V^{def}_P\) and \(\pi(\tau_P|\text{def})\) directly using \(z_P^{def}\) and continuation with reentry.
+        \Else \Comment{\(m_P=0\): Periphery chooses default and \((b'_P,\tau_P)\) if repay}
+            \For{each state slice \((z_O,z_P,b_O,b_P)\)}
+                \For{each leader branch}
+                    \State Leader branch is either:
+                    \begin{itemize}
+                        \item \textbf{Branch L1:} \(d_O=0\) and leader repay action \(a_O=(b'_O,\tau_O)\) varies over \(\mathcal{A}_O\).
+                        \item \textbf{Branch L2:} \(d_O=1\) (Outskirt defaults): treat as ``only Periphery can issue'' case.
+                    \end{itemize}
+                    \State \textbf{Determine case for pricing:}
+                    \begin{itemize}
+                        \item Case P1: both in market and leader repays (two issuers).
+                        \item Case P2: only Periphery in market (leader defaults or excluded).
+                    \end{itemize}
+                    \State \textbf{Inner \(\mu_L\) fixed point for this case (state-level, not global).}
+                    \State Initialize \(\mu=\texttt{muL\_old}[s]\).
+                    \Repeat
+                        \State Set candidate prices: \(q_O=N_O/\mu\) (if issuer active), \(q_P=N_P/\mu\).
+                        \State For each candidate Periphery issuance \(b'_P\) (and given leader issuance \(b'_O\) if active), compute lender consumption:
+                        \[
+                          C_L = y_L + (1-d_O)b_O + (1-d_P)b_P - q_O b'_O - q_P b'_P.
+                        \]
+                        \State Update \(\tilde\mu=C_L^{-\sigma_L}\) and damp: \(\mu \leftarrow (1-\xi)\mu + \xi\tilde\mu\).
+                    \Until{convergence of \(\mu\) for the relevant price object}
+                    \State \textbf{Compute Periphery repay value indices over \((b'_P,\tau_P)\).}
+                    \State For each \(a_P=(b'_P,\tau_P)\), compute current payoff \(U_P^{rep}\) using precomputed \((u_P,T_P)\) at \((z_P,\tau_P)\) and
+                    \[
+                      g_P = T_P + q_P b'_P - b_P
+                    \]
+                    plus continuation \(\beta\,\E[V_{P,old}(s')]\) with \((b'_P,m'_P=0)\) and with leader's implied \((b'_O,m'_O)\).
+                    \State Apply EV log-sum to obtain \(\widetilde V^{rep}_{P,\text{cond}}(s|d_O,a_O)\) and logit \(\pi_P(a_P|s,d_O,a_O,\text{rep})\).
+                    \State \textbf{Compute Periphery default branch (EV over \(\tau_P\)).}
+                    \State Use \(z_P^{def}\), \(b'_P=0\), \(m'_P=1\) to compute \(W_P^{def}(s;\tau_P)\); apply log-sum to get \(\widetilde V^{def}_{P,\text{cond}}\).
+                    \State \textbf{Compute conditional default probability:}
+                    \[
+                      d_{P,\text{cond}}(s|d_O,a_O)=\frac{e^{\widetilde V^{def}/\rho_d}}{e^{\widetilde V^{def}/\rho_d}+e^{\widetilde V^{rep}/\rho_d}}.
+                    \]
+                    \State \textbf{Store conditional objects needed by the leader:}
+                    \(\widetilde V^{rep}_{P,\text{cond}},\widetilde V^{def}_{P,\text{cond}},d_{P,\text{cond}},\)
+                    and conditional expected policies \(b'^{exp}_{P,\text{cond}},\tau_P^{exp}\).
+                \EndFor
+            \EndFor
+        \EndIf
+    \EndFor
+
+    \State \textbf{(Step 4) Solve Outskirt anticipating follower behavior (Appendix C leader step).}
+    \For{each regime \((m_O,m_P)\) and each state \(s\)}
+        \If{\(m_O=1\)} \Comment{Outskirt excluded: EV over \(\tau_O\) only}
+            \State Compute \(\widetilde V_O(s)\) from autarky branch with reentry continuation.
+        \Else
+            \State \textbf{Leader repay branch: evaluate \(W_O^{rep}(s;a_O)\) for all \(a_O\in\mathcal{A}_O\).}
+            \State For each leader action \(a_O=(b'_O,\tau_O)\):
+            \begin{itemize}
+                \item Use stored Periphery conditional objects (from Step 3) at \((s,a_O,d_O=0)\).
+                \item Compute leader current payoff \(U_O^{rep}\) using precomputed \((u_O,T_O)\) and \(g_O=T_O+q_O b'_O - b_O\),
+                where \(q_O\) is obtained from the same within-state \(\mu\) fixed point using \emph{Periphery conditional expected issuance} \(b'^{exp}_{P,\text{cond}}\).
+                \item Add continuation \(\beta\E[V_{O,old}(s')]\) with \((b'_O,m'_O=0)\) and Periphery's implied regime.
+            \end{itemize}
+            \State Apply EV log-sum over \(a_O\) to get \(\widetilde V_O^{rep}(s)\) and \(\pi_O(a_O|s,\text{rep})\).
+            \State \textbf{Leader default branch:} EV over \(\tau_O\) with \(z_O^{def}\), \(b'_O=0\), \(m'_O=1\) yields \(\widetilde V_O^{def}(s)\).
+            \State \textbf{Leader default probability:}
+            \[
+              d_O(s)=\frac{e^{\widetilde V_O^{def}(s)/\rho_d}}{e^{\widetilde V_O^{def}(s)/\rho_d}+e^{\widetilde V_O^{rep}(s)/\rho_d}}.
+            \]
+            \State \textbf{Leader inclusive value:} \(V_O(s)=\mathcal{L}_{\rho_d}(\{\widetilde V_O^{def},\widetilde V_O^{rep}\})\).
+        \EndIf
+    \EndFor
+
+    \State \textbf{(Step 5,9) Plug-in step: obtain Periphery equilibrium objects (Appendix C).}
+    \State For each \(s\) in the both-in-market regime, integrate Periphery conditional objects over leader mixed strategy:
+    \[
+      \widetilde V^{rep}_{P}(s)=\sum_{a_O}\pi_O(a_O|s,\text{rep})\ \widetilde V^{rep}_{P,\text{cond}}(s|d_O=0,a_O),
+    \]
+    \[
+      d_P(s)=\sum_{a_O}\pi_O(a_O|s,\text{rep})\ d_{P,\text{cond}}(s|d_O=0,a_O),
+    \]
+    and compute \(V_P(s)\) using the default-vs-repay inclusive log-sum.
+    \State Also compute Periphery equilibrium repay distribution \(\pi_P^{eq}(\cdot|s,\text{rep})\) if you keep it; otherwise compute expected \(b'_P\) and \(\tau_P\).
+
+    \State \textbf{(Step 10) Update lenders and prices at equilibrium (policy-level).}
+    \State Using equilibrium expected issuances \((b'^{exp}_O,b'^{exp}_P)\) and default probabilities, solve the within-state \(\mu_L(s)\) fixed point once per state/regime.
+    \State Set equilibrium policy-level prices \(q_i^{exp}(s)=N_i(s)/\mu_L(s)\).
+
+    \State \textbf{(Update + damping).}
+    \State Damp-update arrays: \(\texttt{VO}\leftarrow(1-\xi)\texttt{VO}+\xi\texttt{VO\_new}\), similarly for \texttt{VP,dO,dP,muL,qO\_exp,qP\_exp}.
+    \State \textbf{Convergence check:} stop if sup norms of updates for \((V,d,q)\) fall below tolerance.
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Important coding details that matter for convergence (mirroring Appendix C)}
+Appendix C emphasizes that circularity (O affects P affects O) can make convergence hard; EV shocks reduce this. In Python, the practical stabilizers are:
+\begin{itemize}
+\item \textbf{EV smoothing everywhere it matters:} (i) log-sum over \((b',\tau)\) in repay, (ii) log-sum over \(\tau\) in autarky, and (iii) logit between repay vs default.
+\item \textbf{Damping in the stationary iteration} (outer) and \textbf{damping in the within-state \(\mu\) fixed point} (inner).
+\item \textbf{No NaNs:} replace infeasible utilities by a large negative number.
+\item \textbf{Monotone within-state solver:} solve \(\mu\) (or \(C_L\)) with bounded iteration; if \(C_L\le 0\) under some issuance, mark that issuance infeasible (large negative value index).
+\end{itemize}
+
+\subsection{Where taxes enter default risk and bond prices (``Cuadra-style'' channel)}
+Taxes affect \((l,y,c,T)\) and thus both:
+\begin{itemize}
+\item \textbf{current repay value indices} \(W^{rep}_i(s;b',\tau)\) through \(u(z,\tau)\) and \(g=T+q b'-b\),
+\item \textbf{default value} \(W^{def}_i(s;\tau)\) through \(u(z^{def},\tau)\) and \(g^{def}=T(z^{def},\tau)\).
+\end{itemize}
+Therefore taxes shift \(\widetilde V^{rep}\) and \(\widetilde V^{def}\), hence \(d_i(s)\). Because prices depend on next-period default probabilities
+\[
+q_{i,t}\propto \E\big[\mu_{L,t+1}(1-d_{i,t+1})\big],
+\]
+any policy feature (including \(\tau\) through continuation policy rules) that changes \(d_{i,t+1}\) changes prices.
+
+\section{Simulation: expected \((b',\tau)\) policies + discrete default draws + macro variables \(l,c,y,T,g\)}
+
+\subsection{Simulation inputs and outputs}
+Choose \(T_{\text{sim}}=10000\) and burn-in \(T_{\text{burn}}\). You simulate one history \(\{s_t\}\) using:
+\begin{itemize}
+\item \textbf{Expected repay policies} (smooth path): \(b'^{exp}_i(s),\ \tau^{exp}_i(s)\).
+\item \textbf{Discrete default realizations:} if \(m_{i,t}=0\), draw \(D_{i,t}\sim \text{Bernoulli}(d_i(s_t))\).
+\item \textbf{Discrete readmission:} if \(m_{i,t}=1\), draw \(m_{i,t+1}=0\) w.p.\ \(\lambda\), else \(1\).
+\end{itemize}
+
+\subsection{Debt state update (grid vs interpolation)}
+If you want to remain on the discrete grid in simulation:
+\[
+b_{i,t+1}=\Pi_{\mathcal{B}_i}(b'^{exp}_i(s_t)).
+\]
+Alternatively, simulate continuous \(b\) and interpolate policy/value arrays.
+
+\subsection{Allocations and recorded macro variables}
+Define effective productivity and tax:
+\[
+z^{eff}_{i,t}=
+\begin{cases}
+z_{i,t}, & m_{i,t}=0,\ D_{i,t}=0,\\
+z^{def}_{i,t}, & m_{i,t}=1 \text{ or } D_{i,t}=1,
+\end{cases}
+\qquad
+\tau^{eff}_{i,t}=
+\begin{cases}
+\tau^{exp}_{i}(s_t,\text{rep}), & m_{i,t}=0,\ D_{i,t}=0,\\
+\tau^{exp}_{i}(s_t,\text{def}), & m_{i,t}=1 \text{ or } D_{i,t}=1.
+\end{cases}
+\]
+Then:
+\[
+l_{i,t}=l(z^{eff}_{i,t},\tau^{eff}_{i,t}),\quad
+y_{i,t}=z^{eff}_{i,t}l_{i,t},\quad
+c_{i,t}=\frac{y_{i,t}}{1+\tau^{eff}_{i,t}},\quad
+T_{i,t}=\tau^{eff}_{i,t}c_{i,t}.
+\]
+Public good:
+\[
+g_{i,t}=
+\begin{cases}
+T_{i,t}+q^{exp}_{i}(s_t)\,b_{i,t+1}-b_{i,t}, & m_{i,t}=0,\ D_{i,t}=0,\\
+T_{i,t}, & m_{i,t}=1 \text{ or } D_{i,t}=1.
+\end{cases}
+\]
+Lender consumption:
+\[
+C_{L,t}=y_L+(1-D_{O,t})b_{O,t}+(1-D_{P,t})b_{P,t}-q_O^{exp}(s_t)b_{O,t+1}-q_P^{exp}(s_t)b_{P,t+1}.
+\]
+
+\subsection{Discrete default and access update}
+Default draw (only if \(m_{i,t}=0\)):
+\[
+D_{i,t}\sim\text{Bernoulli}(d_i(s_t)).
+\]
+Market access:
+\[
+m_{i,t+1}=
+\begin{cases}
+1,& m_{i,t}=0,\ D_{i,t}=1,\\
+0 \text{ w.p. }\lambda,\ 1 \text{ w.p. }(1-\lambda),& m_{i,t}=1,\\
+0,& m_{i,t}=0,\ D_{i,t}=0.
+\end{cases}
+\]
+Debt:
+\[
+b_{i,t+1}=
+\begin{cases}
+0,& D_{i,t}=1 \text{ or } m_{i,t}=1,\\
+\Pi_{\mathcal{B}_i}(b'^{exp}_i(s_t)),& m_{i,t}=0,\ D_{i,t}=0.
+\end{cases}
+\]
+
+\subsection{Simulation pseudocode}
+\begin{algorithm}[H]
+\caption{Simulation with expected \((b',\tau)\), discrete defaults, record \((l,c,y,T,g)\)}
+\begin{algorithmic}[1]
+\State Choose \(T_{\text{sim}}=10000\), burn-in \(T_{\text{burn}}\), window \(K\) for event studies.
+\State Initialize \(s_1\) (e.g.\ median \(z\), \(b_O=b_P=0\), \(m_O=m_P=0\)).
+\For{\(t=1,\dots,T_{\text{sim}}-1\)}
+    \State Draw \((z_{O,t+1},z_{P,t+1})\sim \Pi(\cdot|z_{O,t},z_{P,t})\).
+    \For{\(i\in\{O,P\}\)}
+        \If{\(m_{i,t}=0\)} \State Draw \(D_{i,t}\sim \mathrm{Bernoulli}(d_i(s_t))\).
+        \Else \State Set \(D_{i,t}=0\).
+        \EndIf
+    \EndFor
+    \For{\(i\in\{O,P\}\)}
+        \If{\(m_{i,t}=1\) or \(D_{i,t}=1\)}
+            \State Set \(b_{i,t+1}=0\); set \(\tau^{eff}_{i,t}=\tau^{exp}_{i}(s_t,\text{def})\).
+        \Else
+            \State Set \(b_{i,t+1}=\Pi_{\mathcal{B}_i}(b'^{exp}_i(s_t,\text{rep}))\);
+            \State Set \(\tau^{eff}_{i,t}=\tau^{exp}_{i}(s_t,\text{rep})\).
+        \EndIf
+    \EndFor
+    \State Compute/store \(l_{i,t},y_{i,t},c_{i,t},T_{i,t},g_{i,t}\) and \(C_{L,t}\).
+    \For{\(i\in\{O,P\}\)}
+        \If{\(m_{i,t}=0\) and \(D_{i,t}=1\)} \State Set \(m_{i,t+1}=1\).
+        \ElsIf{\(m_{i,t}=1\)} \State Draw \(m_{i,t+1}=0\) w.p.\(\lambda\) else \(1\).
+        \Else \State Set \(m_{i,t+1}=0\).
+        \EndIf
+    \EndFor
+\EndFor
+\State Drop burn-in and compute unconditional moments.
+\State Event study: define Outskirt default-entry events \(\mathcal E=\{t:\ m_{O,t}=0,\ D_{O,t}=1\}\).
+\State For \(k=-K,\dots,K\), average each macro series around events \(t\in\mathcal E\).
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Event-study statistics (contagion)}
+For \(X_{i,t}\in\{l,c,y,T,g\}\) and lender \(C_{L,t}\), define:
+\[
+\overline X_i(k)=\frac{1}{|\mathcal E|}\sum_{t\in\mathcal E} X_{i,t+k},\qquad k=-K,\dots,K.
+\]
+Contagion is assessed by the response of Periphery macro variables and default behavior \((D_{P,t}, d_P(s_t))\) around \(\mathcal E\).
+
+\section{Python implementation notes (practical and specific)}
+
+\subsection{Reshape--multiply--reshape pattern for expectations}
+Let \(\Pi\) be \texttt{(Nz,Nz)} over joint productivity.
+If you have an array \texttt{VO\_old} of shape \texttt{(Nz,NbO,NbP,2,2)}, then:
+\begin{enumerate}
+\item reshape to \texttt{(Nz, NbO*NbP*2*2)},
+\item multiply: \texttt{Pi @ reshaped},
+\item reshape back.
+\end{enumerate}
+Do the same for \texttt{muL\_old} and for \texttt{(1-dO\_old)}, \texttt{(1-dP\_old)} to form numerators.
+
+\subsection{Where to loop vs vectorize}
+A robust division of labor in Python:
+\begin{itemize}
+\item vectorize over \(z\) and \(\tau\) using broadcasting (static block is cheap once precomputed),
+\item loop over debt indices (and leader action indices) with Numba \texttt{@njit} if needed,
+\item avoid storing full \texttt{q(s,aO,aP)}; instead store conditional expected policies and only compute within-state prices when evaluating value indices.
+\end{itemize}
+
+\subsection{Minimal subroutines (recommended)}
+Write explicit functions:
+\begin{itemize}
+\item \texttt{logsumexp\_ev(values, rho)} $\rightarrow$ (inclusive value, probabilities),
+\item \texttt{solve\_mu\_fixed\_point(N\_O, N\_P, bO, bP, bO\_pr, bP\_pr, dO\_today, dP\_today)} $\rightarrow$ \(\mu, q_O, q_P\),
+\item \texttt{periphery\_conditional(s, aO, dO)} $\rightarrow$ \(\widetilde V^{rep},\widetilde V^{def},d_P,b'_P{}^{exp},\tau_P^{exp}\),
+\item \texttt{outskirt\_solve(s)} $\rightarrow$ \(\widetilde V_O^{rep},\widetilde V_O^{def},d_O,\pi_O,b'_O{}^{exp},\tau_O^{exp}\),
+\item \texttt{plugin\_periphery(s)} $\rightarrow$ equilibrium \(d_P,\pi_P^{eq}\) or expected policies.
+\end{itemize}
+This mirrors the Appendix-C decomposition and makes the code testable.
+
+\subsection{Convergence diagnostics (what to print)}
+Print sup norms each iteration (like Ferra):
+\[
+\Delta V=\|V^{new}-V^{old}\|_\infty,\quad
+\Delta d=\|d^{new}-d^{old}\|_\infty,\quad
+\Delta q=\|q^{new}-q^{old}\|_\infty.
+\]
+If \(\Delta q\) is stuck, increase damping in the within-state \(\mu\) iteration and/or reduce action grids.
+
+\end{document}
