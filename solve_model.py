@@ -59,8 +59,8 @@ burnin = 500
 rhoA   = 0.02
 rhotau = 0.02
 rhoD   = 0.02
-xi_q   = 0.5   # inner MU damping
-xi_V   = 0.5   # outer value/default damping (stabilizing)
+xi_q   = 0.15  # inner MU damping (conservative for stability)
+xi_V   = 0.20  # outer value/default damping (conservative for stability)
 
 EULER_GAMMA = 0.5772156649015329
 
@@ -321,13 +321,12 @@ def exp_next_objects(izz, mO_today, mP_today, dO_today, dP_today,
     """
     EXACT Step 2 expectation operator:
     loops over z' and re-entry lotteries for excluded countries.
-    Returns EV_O, EV_P, EpayO, EpayP, Emu.
+    Returns EV_O, EV_P, EmupayO, EmupayP where EmupayX = E[mu'*(1-d_X')].
     """
     EV_O = 0.0
     EV_P = 0.0
-    EpayO = 0.0
-    EpayP = 0.0
-    Emu   = 0.0
+    EmupayO = 0.0
+    EmupayP = 0.0
 
     mO_next_det = next_regime_after_today(mO_today, dO_today)
     mP_next_det = next_regime_after_today(mP_today, dP_today)
@@ -375,11 +374,10 @@ def exp_next_objects(izz, mO_today, mP_today, dO_today, dP_today,
                 sid2 = sid_lookup(izz2, ibO_next, ibP_next, r_next, sid_of_)
                 EV_O += prob * V_O[sid2]
                 EV_P += prob * V_P[sid2]
-                EpayO += prob * (1.0 - d_O[sid2])
-                EpayP += prob * (1.0 - d_P[sid2])
-                Emu   += prob * muL[sid2]
+                EmupayO += prob * muL[sid2] * (1.0 - d_O[sid2])
+                EmupayP += prob * muL[sid2] * (1.0 - d_P[sid2])
 
-    return EV_O, EV_P, EpayO, EpayP, Emu
+    return EV_O, EV_P, EmupayO, EmupayP
 
 @njit
 def solve_price_single(b_i, bprime_i, N_i):
@@ -502,7 +500,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izO,it]
                 u = u_defA[izO,it]
-                EV_O_cont, _, _, _, _ = exp_next_objects(izz, 1, 1, 0, 0, 0, 0,
+                EV_O_cont, _, _, _ = exp_next_objects(izz, 1, 1, 0, 0, 0, 0,
                                                          V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_)
                 valsO[it] = u + v_g(g) + beta*EV_O_cont
             VO = ev_logsumexp(valsO, rhotau)
@@ -515,7 +513,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izP,it]
                 u = u_defA[izP,it]
-                _, EV_P_cont, _, _, _ = exp_next_objects(izz, 1, 1, 0, 0, 0, 0,
+                _, EV_P_cont, _, _ = exp_next_objects(izz, 1, 1, 0, 0, 0, 0,
                                                          V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_)
                 valsP[it] = u + v_g(g) + beta*EV_P_cont
             VP = ev_logsumexp(valsP, rhotau)
@@ -541,7 +539,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izP,it]
                 u = u_defA[izP,it]
-                _, EV_P_cont, _, _, _ = exp_next_objects(izz, 0, 1, 0, 0, 0, 0,
+                _, EV_P_cont, _, _ = exp_next_objects(izz, 0, 1, 0, 0, 0, 0,
                                                          V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_)
                 valsP[it] = u + v_g(g) + beta*EV_P_cont
             V_P_new[sid] = ev_logsumexp(valsP, rhotau)
@@ -557,11 +555,11 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 bOp = b_grid[ibOp]
 
-                EV_O_cont, _, EpayO, _, Emu = exp_next_objects(
+                EV_O_cont, _, EmupayO, _ = exp_next_objects(
                     izz, 0, 1, 0, 0, ibOp, 0,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
-                NO = betaL*(Emu*EpayO)
+                NO = betaL*EmupayO
                 qO = solve_price_single(bO, bOp, NO)
 
                 gO = rev_rep[izO,itauO] + qO*bOp - bO
@@ -580,7 +578,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izO,it]
                 u = u_defA[izO,it]
-                EV_O_cont, _, _, _, _ = exp_next_objects(
+                EV_O_cont, _, _, _ = exp_next_objects(
                     izz, 0, 1, 1, 0, 0, 0,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
@@ -609,18 +607,18 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     S += w
                     ibOp = bprime_of_a[aO]
                     bOp = b_grid[ibOp]
-                    EV_O_cont, _, EpayO, _, Emu = exp_next_objects(
+                    EV_O_cont, _, EmupayO, _ = exp_next_objects(
                         izz, 0, 1, 0, 0, ibOp, 0,
                         V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                     )
-                    NO = betaL*(Emu*EpayO)
+                    NO = betaL*EmupayO
                     qO = solve_price_single(bO, bOp, NO)
                     Eqb += w*(qO*bOp)
                 Eqb = Eqb/S if S>0 else 0.0
 
             CL = yL + (1.0-dO)*bO - (1.0-dO)*Eqb
-            if CL <= 1e-14:
-                CL = 1e-14
+            if CL <= 0.01:
+                CL = 0.01
             mu_tilde[sid] = CL**(-sigmaL)
             continue
 
@@ -636,7 +634,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izO,it]
                 u = u_defA[izO,it]
-                EV_O_cont, _, _, _, _ = exp_next_objects(izz, 1, 0, 0, 0, 0, 0,
+                EV_O_cont, _, _, _ = exp_next_objects(izz, 1, 0, 0, 0, 0, 0,
                                                          V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_)
                 valsO[it] = u + v_g(g) + beta*EV_O_cont
             V_O_new[sid] = ev_logsumexp(valsO, rhotau)
@@ -652,11 +650,11 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 bPp = b_grid[ibPp]
 
-                _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+                _, EV_P_cont, _, EmupayP = exp_next_objects(
                     izz, 1, 0, 0, 0, 0, ibPp,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
-                NP = betaL*(Emu*EpayP)
+                NP = betaL*EmupayP
                 qP = solve_price_single(bP, bPp, NP)
 
                 gP = rev_rep[izP,itauP] + qP*bPp - bP
@@ -675,7 +673,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izP,it]
                 u = u_defA[izP,it]
-                _, EV_P_cont, _, _, _ = exp_next_objects(
+                _, EV_P_cont, _, _ = exp_next_objects(
                     izz, 1, 0, 0, 1, 0, 0,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
@@ -703,18 +701,18 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     S += w
                     ibPp = bprime_of_a[aP]
                     bPp = b_grid[ibPp]
-                    _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+                    _, EV_P_cont, _, EmupayP = exp_next_objects(
                         izz, 1, 0, 0, 0, 0, ibPp,
                         V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                     )
-                    NP = betaL*(Emu*EpayP)
+                    NP = betaL*EmupayP
                     qP = solve_price_single(bP, bPp, NP)
                     Eqb += w*(qP*bPp)
                 Eqb = Eqb/S if S>0 else 0.0
 
             CL = yL + (1.0-dP)*bP - (1.0-dP)*Eqb
-            if CL <= 1e-14:
-                CL = 1e-14
+            if CL <= 0.01:
+                CL = 0.01
             mu_tilde[sid] = CL**(-sigmaL)
             continue
 
@@ -746,12 +744,12 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 bPp = b_grid[ibPp]
 
-                EV_O_cont, EV_P_cont, EpayO, EpayP, Emu = exp_next_objects(
+                EV_O_cont, EV_P_cont, EmupayO, EmupayP = exp_next_objects(
                     izz, 0, 0, 0, 0, ibOp, ibPp,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
-                NO = betaL*(Emu*EpayO)
-                NP = betaL*(Emu*EpayP)
+                NO = betaL*EmupayO
+                NP = betaL*EmupayP
 
                 qO, qP = solve_price_RR(bO, bP, bOp, bPp, NO, NP)
 
@@ -781,12 +779,12 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     ibPp = bprime_of_a[aP]
                     bPp = b_grid[ibPp]
 
-                    EV_O_cont, EV_P_cont, EpayO, EpayP, Emu = exp_next_objects(
+                    EV_O_cont, EV_P_cont, EmupayO, EmupayP = exp_next_objects(
                         izz, 0, 0, 0, 0, ibOp, ibPp,
                         V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                     )
-                    NO = betaL*(Emu*EpayO)
-                    NP = betaL*(Emu*EpayP)
+                    NO = betaL*EmupayO
+                    NP = betaL*EmupayP
                     qO, qP = solve_price_RR(bO, bP, bOp, bPp, NO, NP)
 
                     EqO += w*(qO*bOp)
@@ -809,7 +807,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                     continue
                 g = rev_defA[izP,it]
                 u = u_defA[izP,it]
-                _, EV_P_cont, _, _, _ = exp_next_objects(
+                _, EV_P_cont, _, _ = exp_next_objects(
                     izz, 0, 0, 0, 1, ibOp, 0,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
@@ -835,11 +833,11 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
             bOp = b_grid[ibOp]
 
             # RD branch (P defaults): single issuer price for O
-            EV_O_cont_RD, _, EpayO_RD, _, Emu_RD = exp_next_objects(
+            EV_O_cont_RD, _, EmupayO_RD, _ = exp_next_objects(
                 izz, 0, 0, 0, 1, ibOp, 0,
                 V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
             )
-            NO_RD = betaL*(Emu_RD*EpayO_RD)
+            NO_RD = betaL*EmupayO_RD
             qO_RD = solve_price_single(bO, bOp, NO_RD)
 
             dP_here = dP_cond[aO]
@@ -868,11 +866,11 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                 WrepP_dO1[aP] = -1e18
                 continue
             bPp = b_grid[ibPp]
-            _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+            _, EV_P_cont, _, EmupayP = exp_next_objects(
                 izz, 0, 0, 1, 0, 0, ibPp,
                 V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
             )
-            NP = betaL*(Emu*EpayP)
+            NP = betaL*EmupayP
             qP = solve_price_single(bP, bPp, NP)
             gP = rev_rep[izP,itauP] + qP*bPp - bP
             if gP <= 0.0:
@@ -889,7 +887,7 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                 continue
             g = rev_defA[izP,it]
             u = u_defA[izP,it]
-            _, EV_P_cont, _, _, _ = exp_next_objects(
+            _, EV_P_cont, _, _ = exp_next_objects(
                 izz, 0, 0, 1, 1, 0, 0,
                 V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
             )
@@ -970,11 +968,11 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
                 Sp += w
                 ibPp = bprime_of_a[aP]
                 bPp = b_grid[ibPp]
-                _, _, _, EpayP2, Emu2 = exp_next_objects(
+                _, _, _, EmupayP2 = exp_next_objects(
                     izz, 0, 0, 1, 0, 0, ibPp,
                     V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_
                 )
-                NP2 = betaL*(Emu2*EpayP2)
+                NP2 = betaL*EmupayP2
                 qP2 = solve_price_single(bP, bPp, NP2)
                 EqPb_dO1 += w*(qP2*bPp)
             EqPb_dO1 = EqPb_dO1/Sp if Sp>0 else 0.0
@@ -982,19 +980,24 @@ def fixed_point_update(V_O_old, V_P_old, d_O_old, d_P_old, muL_old, sid_of_):
         Erep = (1.0-dO)*bO + (1.0-dP)*bP
         Epurch = (1.0-dO)*(EqO_rep + EqP_rep) + dO*(1.0-dP_dO1)*EqPb_dO1
         CL = yL + Erep - Epurch
-        if CL <= 1e-14:
-            CL = 1e-14
+        if CL <= 0.01:
+            CL = 0.01
         mu_tilde[sid] = CL**(-sigmaL)
 
     return V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde
 
 # Solve fixed point
-max_iter = 200
+max_iter = 500
 tol = 1e-5
 
 print("\nStarting fixed point iteration...", flush=True)
 for it in range(max_iter):
     V_O_new, V_P_new, d_O_new, d_P_new, mu_tilde = fixed_point_update(V_O, V_P, d_O, d_P, muL, sid_of)
+
+    # Clamp mu_tilde to prevent numerical explosion
+    # muL of 50 corresponds to CL ≈ 0.04 (reasonable floor for lender consumption)
+    mu_max = 50.0
+    mu_tilde = np.minimum(mu_tilde, mu_max)
 
     muL_new = (1.0-xi_q)*muL + xi_q*mu_tilde
     V_O_upd = (1.0-xi_V)*V_O + xi_V*V_O_new
@@ -1108,11 +1111,11 @@ for js, sid in enumerate(joint_sids):
                 continue
             bPp = float(b_grid[ibPp])
 
-            EV_O_cont, EV_P_cont, EpayO, EpayP, Emu = exp_next_objects(
+            EV_O_cont, EV_P_cont, EmupayO, EmupayP = exp_next_objects(
                 izz, 0, 0, 0, 0, ibOp, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
             )
-            NO = betaL*(Emu*EpayO)
-            NP = betaL*(Emu*EpayP)
+            NO = betaL*EmupayO
+            NP = betaL*EmupayP
             qO, qP = solve_price_RR(bO, bP, bOp, bPp, NO, NP)
 
             gP = float(rev_rep[izP,itauP]) + qP*bPp - bP
@@ -1147,10 +1150,10 @@ for js, sid in enumerate(joint_sids):
         if ok_rep[izP,itauP] == 0:
             continue
         bPp = float(b_grid[ibPp])
-        _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+        _, EV_P_cont, _, EmupayP = exp_next_objects(
             izz, 0, 0, 1, 0, 0, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
         )
-        NP = betaL*(Emu*EpayP)
+        NP = betaL*EmupayP
         qP = solve_price_single(bP, bPp, NP)
         gP = float(rev_rep[izP,itauP]) + qP*bPp - bP
         if gP <= 0.0:
@@ -1184,10 +1187,10 @@ for js, sid in enumerate(joint_sids):
         bOp = float(b_grid[ibOp])
 
         # RD branch price for O
-        EV_O_RD, _, EpayO_RD, _, Emu_RD = exp_next_objects(
+        EV_O_RD, _, EmupayO_RD, _ = exp_next_objects(
             izz, 0, 0, 0, 1, ibOp, 0, V_O, V_P, d_O, d_P, muL, sid_of
         )
-        NO_RD = betaL*(Emu_RD*EpayO_RD)
+        NO_RD = betaL*EmupayO_RD
         qO_RD = solve_price_single(bO, bOp, NO_RD)
 
         # RR branch integrate over πP_RR
@@ -1200,11 +1203,11 @@ for js, sid in enumerate(joint_sids):
                 continue
             ibPp = int(bprime_of_a[aP]); bPp = float(b_grid[ibPp])
 
-            EV_O_cont, EV_P_cont, EpayO, EpayP, Emu = exp_next_objects(
+            EV_O_cont, EV_P_cont, EmupayO, EmupayP = exp_next_objects(
                 izz, 0, 0, 0, 0, ibOp, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
             )
-            NO = betaL*(Emu*EpayO)
-            NP = betaL*(Emu*EpayP)
+            NO = betaL*EmupayO
+            NP = betaL*EmupayP
             qO, qP = solve_price_RR(bO, bP, bOp, bPp, NO, NP)
             EqOb_RR += pp*(qO*bOp)
             EEV_O_RR += pp*(EV_O_cont)
@@ -1253,10 +1256,10 @@ for ks, sid in enumerate(soleO_sids):
         if ok_rep[izO,itauO] == 0:
             continue
         bOp = float(b_grid[ibOp])
-        EV_O_cont, _, EpayO, _, Emu = exp_next_objects(
+        EV_O_cont, _, EmupayO, _ = exp_next_objects(
             izz, 0, 1, 0, 0, ibOp, 0, V_O, V_P, d_O, d_P, muL, sid_of
         )
-        NO = betaL*(Emu*EpayO)
+        NO = betaL*EmupayO
         qO = solve_price_single(bO, bOp, NO)
         gO = float(rev_rep[izO,itauO]) + qO*bOp - bO
         if gO <= 0.0:
@@ -1287,10 +1290,10 @@ for ks, sid in enumerate(soleP_sids):
         if ok_rep[izP,itauP] == 0:
             continue
         bPp = float(b_grid[ibPp])
-        _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+        _, EV_P_cont, _, EmupayP = exp_next_objects(
             izz, 1, 0, 0, 0, 0, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
         )
-        NP = betaL*(Emu*EpayP)
+        NP = betaL*EmupayP
         qP = solve_price_single(bP, bPp, NP)
         gP = float(rev_rep[izP,itauP]) + qP*bPp - bP
         if gP <= 0.0:
@@ -1354,6 +1357,11 @@ paths = {
     "P_q": np.zeros((N_sim, T_eff)),
     "P_def": np.zeros((N_sim, T_eff), dtype=np.int8),
 
+    "O_bprime": np.zeros((N_sim, T_eff)),
+    "P_bprime": np.zeros((N_sim, T_eff)),
+    "O_issuance": np.zeros((N_sim, T_eff)),
+    "P_issuance": np.zeros((N_sim, T_eff)),
+
     "L_C": np.zeros((N_sim, T_eff)),
     "L_mu": np.zeros((N_sim, T_eff)),
 }
@@ -1403,11 +1411,11 @@ for n in range(N_sim):
                     bPp = float(b_grid[ibPp])
 
                     # realized RR prices (exact)
-                    EV_O_cont, EV_P_cont, EpayO, EpayP, Emu = exp_next_objects(
+                    EV_O_cont, EV_P_cont, EmupayO, EmupayP = exp_next_objects(
                         izz, 0, 0, 0, 0, ibOp, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
                     )
-                    NO = betaL*(Emu*EpayO)
-                    NP = betaL*(Emu*EpayP)
+                    NO = betaL*EmupayO
+                    NP = betaL*EmupayP
                     qO, qP = solve_price_RR(bO, bP, bOp, bPp, NO, NP)
 
                 else:
@@ -1415,10 +1423,10 @@ for n in range(N_sim):
                     itauP = draw_from_probs(piTau_P_def_joint[js,aO,:])
                     ibPp = 0; qP = 0.0
                     # O single issuer price qO_RD
-                    EV_O_cont, _, EpayO, _, Emu = exp_next_objects(
+                    EV_O_cont, _, EmupayO, _ = exp_next_objects(
                         izz, 0, 0, 0, 1, ibOp, 0, V_O, V_P, d_O, d_P, muL, sid_of
                     )
-                    NO = betaL*(Emu*EpayO)
+                    NO = betaL*EmupayO
                     qO = solve_price_single(bO, bOp, NO)
 
             else:
@@ -1433,10 +1441,10 @@ for n in range(N_sim):
                     ibPp = int(bprime_of_a[aP]); itauP = int(tau_of_a[aP])
                     bPp = float(b_grid[ibPp])
 
-                    _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+                    _, EV_P_cont, _, EmupayP = exp_next_objects(
                         izz, 0, 0, 1, 0, 0, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
                     )
-                    NP = betaL*(Emu*EpayP)
+                    NP = betaL*EmupayP
                     qP = solve_price_single(bP, bPp, NP)
                 else:
                     itauP = draw_from_probs(piTau_P_def_dO1[js,:])
@@ -1450,10 +1458,10 @@ for n in range(N_sim):
                 aO = draw_from_probs(piO_sole[ks,:])
                 ibOp = int(bprime_of_a[aO]); itauO = int(tau_of_a[aO])
                 bOp = float(b_grid[ibOp])
-                EV_O_cont, _, EpayO, _, Emu = exp_next_objects(
+                EV_O_cont, _, EmupayO, _ = exp_next_objects(
                     izz, 0, 1, 0, 0, ibOp, 0, V_O, V_P, d_O, d_P, muL, sid_of
                 )
-                NO = betaL*(Emu*EpayO)
+                NO = betaL*EmupayO
                 qO = solve_price_single(bO, bOp, NO)
             else:
                 itauO = draw_from_probs(piTau_O_def_sole[ks,:])
@@ -1478,10 +1486,10 @@ for n in range(N_sim):
                 aP = draw_from_probs(piP_sole[ks,:])
                 ibPp = int(bprime_of_a[aP]); itauP = int(tau_of_a[aP])
                 bPp = float(b_grid[ibPp])
-                _, EV_P_cont, _, EpayP, Emu = exp_next_objects(
+                _, EV_P_cont, _, EmupayP = exp_next_objects(
                     izz, 1, 0, 0, 0, 0, ibPp, V_O, V_P, d_O, d_P, muL, sid_of
                 )
-                NP = betaL*(Emu*EpayP)
+                NP = betaL*EmupayP
                 qP = solve_price_single(bP, bPp, NP)
             else:
                 itauP = draw_from_probs(piTau_P_def_sole[ks,:])
@@ -1541,8 +1549,16 @@ for n in range(N_sim):
             yP = float(z_grid[izP]) * lP
             gP = revP + qP*float(b_grid[ibPp]) - bP
 
+        # Fix: bond price is 0 when no bonds are actually issued (bprime=0)
+        bOp_val = float(b_grid[ibOp])
+        bPp_val = float(b_grid[ibPp])
+        if bOp_val == 0.0:
+            qO = 0.0
+        if bPp_val == 0.0:
+            qP = 0.0
+
         repayments = (1-dO_today)*bO + (1-dP_today)*bP
-        purchases  = qO*float(b_grid[ibOp]) + qP*float(b_grid[ibPp])
+        purchases  = qO*bOp_val + qP*bPp_val
         CL = yL + repayments - purchases
         if CL <= 1e-14:
             CL = 1e-14
@@ -1552,12 +1568,17 @@ for n in range(N_sim):
         izz_next = draw_next_izz(izz)
 
         # --- Next regimes and debts (exact) ---
+        # If country had access and defaulted: excluded next period (no re-entry lottery)
+        # If country was already excluded: re-entry lottery with prob lam
+        # If country had access and repaid: stays in access
         mO_next = 1 if (mO==0 and dO_today==1) else (mO if mO==1 else 0)
         mP_next = 1 if (mP==0 and dP_today==1) else (mP if mP==1 else 0)
 
-        if mO_next==1 and np.random.rand() < lam:
+        # Re-entry lottery ONLY for countries that were already excluded (mO==1),
+        # NOT for countries that just defaulted this period
+        if mO==1 and np.random.rand() < lam:
             mO_next = 0
-        if mP_next==1 and np.random.rand() < lam:
+        if mP==1 and np.random.rand() < lam:
             mP_next = 0
 
         r_next = m_to_r(mO_next, mP_next)
@@ -1579,6 +1600,8 @@ for n in range(N_sim):
             paths["O_b"][n,tt]=bO
             paths["O_q"][n,tt]=qO
             paths["O_def"][n,tt]=dO_today
+            paths["O_bprime"][n,tt]=bOp_val
+            paths["O_issuance"][n,tt]=qO*bOp_val
 
             paths["P_y"][n,tt]=yP
             paths["P_c"][n,tt]=cP
@@ -1588,6 +1611,8 @@ for n in range(N_sim):
             paths["P_b"][n,tt]=bP
             paths["P_q"][n,tt]=qP
             paths["P_def"][n,tt]=dP_today
+            paths["P_bprime"][n,tt]=bPp_val
+            paths["P_issuance"][n,tt]=qP*bPp_val
 
             paths["L_C"][n,tt]=CL
             paths["L_mu"][n,tt]=mu
@@ -1618,13 +1643,13 @@ def event_average(series, events, H):
 events_O = paths["O_def"].astype(bool)
 
 vars_to_plot = [
-    ("O_y","O output"), ("O_c","O consumption"), ("O_l","O labor"), ("O_g","O public g"), ("O_tau","O tax"), ("O_b","O debt due"), ("O_q","O bond price"),
-    ("P_y","P output"), ("P_c","P consumption"), ("P_l","P labor"), ("P_g","P public g"), ("P_tau","P tax"), ("P_b","P debt due"), ("P_q","P bond price"),
+    ("O_y","O output"), ("O_c","O consumption"), ("O_l","O labor"), ("O_g","O public g"), ("O_tau","O tax"), ("O_b","O debt due"), ("O_q","O bond price"), ("O_bprime","O new debt b'"), ("O_issuance","O issuance q*b'"),
+    ("P_y","P output"), ("P_c","P consumption"), ("P_l","P labor"), ("P_g","P public g"), ("P_tau","P tax"), ("P_b","P debt due"), ("P_q","P bond price"), ("P_bprime","P new debt b'"), ("P_issuance","P issuance q*b'"),
     ("L_C","Lender consumption"), ("L_mu","Lender MU"),
 ]
 
 print("\nGenerating event study plots...", flush=True)
-fig, axes = plt.subplots(6, 3, figsize=(15, 16))
+fig, axes = plt.subplots(7, 3, figsize=(15, 19))
 axes = axes.ravel()
 
 for i, (k, title) in enumerate(vars_to_plot):
